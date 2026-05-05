@@ -1,4 +1,9 @@
-.idea/
-vendor/
 .env
+app/.env
+.idea/
+.vscode/
 *.log
+docker/data
+docker/volumes
+node_modules
+.DS_Store
