@@ -15,11 +15,9 @@ RUN apt-get update \
     libpq-dev \
  && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /usr/local/var/log \
-    && chown -R www-data:www-data /usr/local/var/log
-
 # Install PHP extensions via mlocati
 COPY --from=mlocati/php-extension-installer:latest /usr/bin/install-php-extensions /usr/local/bin/
+COPY docker/php/conf/php-fpm.conf /usr/local/etc/php-fpm.conf
 
 RUN chmod +x /usr/local/bin/install-php-extensions && \
     install-php-extensions \
@@ -101,8 +99,8 @@ COPY --from=build /var/www/app /var/www/app
 
 RUN chown -R www-data:www-data /var/www/app
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD SCRIPT_NAME=/fpm-ping SCRIPT_FILENAME=/fpm-ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 | grep -q "pong" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD SCRIPT_NAME=/ping SCRIPT_FILENAME=/ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 | grep -q "pong" || exit 1
 
 USER www-data
 

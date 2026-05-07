@@ -1,0 +1,23 @@
+services:
+  php:
+    build:
+      target: prod
+    environment:
+      APP_ENV: production
+      APP_DEBUG: 0
+
+  nginx:
+    ports:
+      - "80:80"
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: pizza
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - pg_data_prod:/var/lib/postgresql/data
+
+volumes:
+  pg_data_prod:
