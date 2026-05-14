@@ -1,9 +1,13 @@
-.env
-app/.env
+.env.local
 .idea/
 .vscode/
+.DS_Store
 *.log
+
 docker/data
 docker/volumes
+
 node_modules
-.DS_Store
+
+app/bootstrap/cache/*.php
+app/.env
