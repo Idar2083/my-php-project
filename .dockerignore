@@ -1,0 +1,11 @@
+.git
+.idea
+.vscode
+
+app/vendor
+app/node_modules
+
+app/bootstrap/cache/*.php
+
+docker/data
+docker/volumes

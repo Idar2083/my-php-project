@@ -1,4 +1,13 @@
+.env.local
 .idea/
-vendor/
-.env
+.vscode/
+.DS_Store
 *.log
+
+docker/data
+docker/volumes
+
+node_modules
+
+app/bootstrap/cache/*.php
+app/.env
