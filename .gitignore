@@ -8,6 +8,7 @@ docker/data
 docker/volumes
 
 node_modules
+vendor
 
-app/bootstrap/cache/*.php
-app/.env
+bootstrap/cache/*.php
+.env
