@@ -3,29 +3,25 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Models\Product;
-use Illuminate\Http\Request;
+use App\Http\Requests\StoreProductRequest;
+use App\Http\Requests\UpdateProductRequest;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Symfony\Component\HttpFoundation\Response;
 use App\Http\Resources\ProductResource;
 
 class ProductController extends Controller
 {
 
-    public function index()
+    public function index(): AnonymousResourceCollection
     {
         $products = Product::paginate(30);
 
         return ProductResource::collection($products);
     }
 
-    public function store(Request $request)
+    public function store(StoreProductRequest $request)
     {
-        $validate = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'price' => ['required', 'numeric', 'min:0'],
-            'category' => ['required', 'string', 'max:255'],
-            'description' => ['nullable', 'string', 'max:1000'],
-            'weight' => ['required', 'numeric', 'gt:0'],
-        ]);
+        $validate = $request->validated();
 
         $product = Product::create($validate);
 
@@ -39,16 +35,10 @@ class ProductController extends Controller
         return new ProductResource($product);
     }
 
-    public function update(Request $request, string $id)
+    public function update(UpdateProductRequest $request, string $id)
     {
         $product = Product::findOrFail($id);
-        $validate = $request->validate([
-            'name' => ['sometimes', 'string', 'max:255'],
-            'price' => ['sometimes', 'numeric', 'min:0'],
-            'category' => ['sometimes', 'string', 'max:255'],
-            'description' => ['nullable', 'string', 'max:255'],
-            'weight' => ['sometimes', 'numeric', 'gt:0'],
-        ]);
+        $validate = $request->validated();
 
         $product->update($validate);
         return new ProductResource($product);

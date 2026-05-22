@@ -15,7 +15,7 @@ return new class extends Migration
             $table->text('description')->nullable();
             $table->string('category');
             $table->decimal('weight', total: 5, places: 3);
-            $table->decimal('price', total: 5, places: 3);
+            $table->unsignedInteger('price');
         });
     }
 
