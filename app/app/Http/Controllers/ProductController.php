@@ -5,9 +5,9 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Models\Product;
 use App\Http\Requests\StoreProductRequest;
 use App\Http\Requests\UpdateProductRequest;
+use App\Http\Resources\ProductResource;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Symfony\Component\HttpFoundation\Response;
-use App\Http\Resources\ProductResource;
 
 class ProductController extends Controller
 {
