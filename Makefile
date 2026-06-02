@@ -12,7 +12,8 @@ endif
 .PHONY: up down logs bash composer-install
 
 up:
-	docker compose up -d --build --remove-orphans
+	docker compose --env-file .env --env-file .env.local \
+    		up -d --build --remove-orphans
 	$(MAKE) composer-install
 	@echo "Application is available at: http://localhost:$${NGINX_PORT}/"
 

@@ -81,7 +81,7 @@ RUN composer clear-cache && \
 # === PROD ===
 FROM base AS prod
 
-ENV APP_ENV=local APP_DEBUG=0
+ENV APP_ENV=production APP_DEBUG=0
 
 COPY --from=build /var/www/app /var/www/app
 

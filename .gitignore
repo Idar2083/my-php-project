@@ -3,7 +3,7 @@
 .vscode/
 .DS_Store
 *.log
-.env.testing.local
+app/.env.testing.local
 
 docker/data
 docker/volumes
