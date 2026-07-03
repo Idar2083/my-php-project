@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Enums\UserRole;
 use App\Http\Controllers\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Symfony\Component\HttpFoundation\Response;
@@ -26,14 +27,14 @@ class ProductAuthorizationTest extends TestCase
     private function createUser(): User
     {
         return User::factory()->create([
-            'role' => User::ROLE_USER,
+            'role' => UserRole::USER,
         ]);
     }
 
     private function createAdmin(): User
     {
         return User::factory()->create([
-            'role' => User::ROLE_ADMIN,
+            'role' => UserRole::ADMIN,
         ]);
     }
 

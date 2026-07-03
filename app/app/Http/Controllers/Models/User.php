@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Models;
 
+use App\Enums\UserRole;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
@@ -14,10 +15,6 @@ use Tymon\JWTAuth\Contracts\JWTSubject;
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable implements JWTSubject
 {
-    public const ROLE_USER = 'user';
-
-    public const ROLE_ADMIN = 'admin';
-
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable;
 
@@ -26,7 +23,6 @@ class User extends Authenticatable implements JWTSubject
      *
      * @return array<string, string>
      */
-
     protected static function newFactory(): UserFactory
     {
         return UserFactory::new();
@@ -37,6 +33,7 @@ class User extends Authenticatable implements JWTSubject
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'role' => UserRole::class,
         ];
     }
 
@@ -49,5 +46,4 @@ class User extends Authenticatable implements JWTSubject
     {
         return [];
     }
-
 }

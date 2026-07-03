@@ -9,7 +9,7 @@ include .env.local
 export
 endif
 
-.PHONY: up down logs bash composer-install
+.PHONY: up down logs bash composer-install jwt-secret
 
 up:
 	docker compose --env-file .env --env-file .env.local \
@@ -28,6 +28,9 @@ bash:
 
 composer-install:
 	docker compose exec -T php sh -lc 'mkdir -p vendor && composer install --no-interaction --prefer-dist'
+
+jwt_secret:
+	docker compose exec -T php php artisan jwt:secret --force
 
 up-prod:
 	docker compose --env-file .env --env-file .env.local \
