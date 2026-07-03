@@ -11,7 +11,6 @@ use Symfony\Component\HttpFoundation\Response;
 
 class ProductController extends Controller
 {
-
     public function index(): AnonymousResourceCollection
     {
         $products = Product::paginate(30);
@@ -41,6 +40,7 @@ class ProductController extends Controller
         $validate = $request->validated();
 
         $product->update($validate);
+
         return new ProductResource($product);
     }
 
