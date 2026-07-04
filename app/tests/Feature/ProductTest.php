@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Tests\Feature;
 
 use App\Enums\UserRole;
@@ -47,7 +49,7 @@ class ProductTest extends TestCase
         $admin = $this->createAdmin();
 
         return [
-            'Authorization' => 'Bearer '.$this->tokenFor($admin),
+            'Authorization' => 'Bearer ' . $this->tokenFor($admin),
         ];
     }
 
@@ -58,16 +60,17 @@ class ProductTest extends TestCase
             ->withHeaders($this->authHeaders())
             ->postJson(
                 '/api/products',
-                $this->validProductData()
+                $this->validProductData(),
             );
 
         $response->assertStatus(Response::HTTP_CREATED);
 
-        $this->assertDatabaseHas('products',
+        $this->assertDatabaseHas(
+            'products',
             [
                 'name' => 'Pepperoni',
                 'category' => 'Pizza',
-            ]
+            ],
         );
     }
 
@@ -75,13 +78,14 @@ class ProductTest extends TestCase
     {
         $response = $this
             ->withHeaders($this->authHeaders())
-            ->postJson('/api/products',
+            ->postJson(
+                '/api/products',
                 [
                     'name' => '',
                     'category' => '',
                     'price' => -1,
                     'weight' => -1,
-                ]
+                ],
             );
 
         $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
@@ -134,7 +138,7 @@ class ProductTest extends TestCase
     {
         $product = $this->createProduct();
 
-        $response = $this->getJson('/api/products/'.$product->id);
+        $response = $this->getJson('/api/products/' . $product->id);
 
         $response->assertStatus(Response::HTTP_OK)
             ->assertJsonFragment([
@@ -147,7 +151,7 @@ class ProductTest extends TestCase
     {
         $missingProductId = 999;
 
-        $response = $this->getJson('/api/products/'.$missingProductId);
+        $response = $this->getJson('/api/products/' . $missingProductId);
 
         $response->assertStatus(Response::HTTP_NOT_FOUND);
     }
@@ -159,21 +163,23 @@ class ProductTest extends TestCase
 
         $response = $this
             ->withHeaders($this->authHeaders())
-            ->putJson('/api/products/'.$product->id,
+            ->putJson(
+                '/api/products/' . $product->id,
                 [
                     ...$this->validProductData(),
                     'name' => 'Four Cheese',
                     'price' => 899,
-                ]
+                ],
             );
 
         $response->assertStatus(Response::HTTP_OK);
 
-        $this->assertDatabaseHas('products',
+        $this->assertDatabaseHas(
+            'products',
             [
                 'id' => $product->id,
                 'name' => 'Four Cheese',
-            ]
+            ],
         );
     }
 
@@ -184,10 +190,10 @@ class ProductTest extends TestCase
         $response = $this
             ->withHeaders($this->authHeaders())
             ->putJson(
-                '/api/products/'.$product->id,
+                '/api/products/' . $product->id,
                 [
                     'price' => -100,
-                ]
+                ],
             );
 
         $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY);
@@ -200,14 +206,15 @@ class ProductTest extends TestCase
 
         $response = $this
             ->withHeaders($this->authHeaders())
-            ->deleteJson('/api/products/'.$product->id);
+            ->deleteJson('/api/products/' . $product->id);
 
         $response->assertStatus(Response::HTTP_NO_CONTENT);
 
-        $this->assertDatabaseMissing('products',
+        $this->assertDatabaseMissing(
+            'products',
             [
                 'id' => $product->id,
-            ]
+            ],
         );
     }
 
@@ -217,7 +224,7 @@ class ProductTest extends TestCase
 
         $response = $this
             ->withHeaders($this->authHeaders())
-            ->deleteJson('/api/products/'.$missingProductId);
+            ->deleteJson('/api/products/' . $missingProductId);
 
         $response->assertStatus(Response::HTTP_NOT_FOUND);
     }

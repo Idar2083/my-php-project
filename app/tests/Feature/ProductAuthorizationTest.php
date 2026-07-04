@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Tests\Feature;
 
 use App\Enums\UserRole;
@@ -47,18 +49,18 @@ class ProductAuthorizationTest extends TestCase
     {
         $response = $this->postJson(
             '/api/products',
-            $this->validProductData()
+            $this->validProductData(),
         );
 
         $response->assertStatus(
-            Response::HTTP_UNAUTHORIZED
+            Response::HTTP_UNAUTHORIZED,
         );
     }
 
     public function test_user_cannot_create_product(): void
     {
         $token = $this->tokenFor(
-            $this->createUser()
+            $this->createUser(),
         );
 
         $response = $this
@@ -67,18 +69,18 @@ class ProductAuthorizationTest extends TestCase
             ])
             ->postJson(
                 '/api/products',
-                $this->validProductData()
+                $this->validProductData(),
             );
 
         $response->assertStatus(
-            Response::HTTP_FORBIDDEN
+            Response::HTTP_FORBIDDEN,
         );
     }
 
     public function test_admin_can_create_product(): void
     {
         $token = $this->tokenFor(
-            $this->createAdmin()
+            $this->createAdmin(),
         );
 
         $response = $this
@@ -87,11 +89,11 @@ class ProductAuthorizationTest extends TestCase
             ])
             ->postJson(
                 '/api/products',
-                $this->validProductData()
+                $this->validProductData(),
             );
 
         $response->assertStatus(
-            Response::HTTP_CREATED
+            Response::HTTP_CREATED,
         );
 
         $this->assertDatabaseHas('products', [
