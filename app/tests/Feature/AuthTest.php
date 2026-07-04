@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Tests\Feature;
 
 use App\Http\Controllers\Models\User;
@@ -27,7 +29,7 @@ class AuthTest extends TestCase
             array_merge([
                 'email' => 'john@example.com',
                 'password' => 'Password1!',
-            ], $attributes)
+            ], $attributes),
         );
     }
 
@@ -43,7 +45,7 @@ class AuthTest extends TestCase
     {
         $response = $this->postJson(
             '/api/register',
-            $this->registerData()
+            $this->registerData(),
         );
 
         $response
@@ -64,7 +66,7 @@ class AuthTest extends TestCase
 
         $response = $this->postJson(
             '/api/login',
-            $this->loginCredentials()
+            $this->loginCredentials(),
         );
 
         $response
