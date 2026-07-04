@@ -41,3 +41,9 @@ down-prod:
 
 logs-prod:
 	docker compose -f docker-compose.prod.yml logs -f
+
+cs:
+	cd app && vendor/bin/php-cs-fixer fix
+
+cs-check:
+	cd app && vendor/bin/php-cs-fixer fix --dry-run --diff

@@ -13,5 +13,3 @@ vendor
 
 bootstrap/cache/*.php
 .env
-
-app/.php-cs-fixer.php
