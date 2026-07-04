@@ -67,9 +67,26 @@ return (new Config())
         ],
 
         'declare_strict_types' => true,
-
         'strict_comparison' => true,
-
         'strict_param' => true,
+
+        'global_namespace_import' => [
+            'import_constants' => false,
+            'import_functions' => false,
+            'import_classes' => false,
+        ],
+
+        'method_chaining_indentation' => true,
+
+        'no_superfluous_phpdoc_tags' => [
+            'remove_inheritdoc' => true,
+        ],
+
+        'numeric_literal_separator' => true,
+        'no_trailing_whitespace_in_string' => true,
+
+        'ordered_class_elements' => [
+            'order' => ['use_trait'],
+        ],
     ])
     ->setFinder($finder);
