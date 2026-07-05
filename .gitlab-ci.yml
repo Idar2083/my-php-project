@@ -42,7 +42,7 @@ rector:
     - vendor/bin/rector process --dry-run
 
 tests:
-  stage: test
+  stage: code-quality
   image: php:8.3-cli
   before_script:
     - apt-get update && apt-get install -y git unzip curl libpq-dev
