@@ -5,8 +5,9 @@ stages:
 build:
   stage: build
   image: docker:latest
-  services:
-    - docker:dind
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+    DOCKER_TLS_CERTDIR: ""
   script:
     - docker build -f docker/php/Dockerfile -t pizza-backend .
 
@@ -41,11 +42,13 @@ rector:
     - vendor/bin/rector process --dry-run
 
 tests:
-  stage: code-quality
+  stage: test
   image: php:8.3-cli
   before_script:
-    - apt-get update && apt-get install -y git unzip curl
-    - curl -sS https://getcomposer.org/installer | php
+    - apt-get update && apt-get install -y git unzip curl libpq-dev
+    - docker-php-ext-install pdo_pgsql
+    - curl -sS https://getcomposer.org | php
     - php composer.phar install --no-interaction
   script:
+    - vendor/bin/pint --test
     - php artisan test
