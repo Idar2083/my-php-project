@@ -8,8 +8,7 @@ build:
   services:
     - docker:dind
   script:
-      - cd docker
-      - docker build -t pizza-backend .
+    - docker build -f docker/php/Dockerfile -t pizza-backend .
 
 phpstan:
   stage: code-quality
