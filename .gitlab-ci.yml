@@ -1,0 +1,51 @@
+stages:
+  - build
+  - code-quality
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t pizza-backend .
+
+phpstan:
+  stage: code-quality
+  image: php:8.3-cli
+  before_script:
+    - apt-get update && apt-get install -y git unzip curl
+    - curl -sS https://getcomposer.org/installer | php
+    - php composer.phar install --no-interaction
+  script:
+    - vendor/bin/phpstan analyse
+
+php-cs-fixer:
+  stage: code-quality
+  image: php:8.3-cli
+  before_script:
+    - apt-get update && apt-get install -y git unzip curl
+    - curl -sS https://getcomposer.org/installer | php
+    - php composer.phar install --no-interaction
+  script:
+    - vendor/bin/php-cs-fixer fix --dry-run --diff
+
+rector:
+  stage: code-quality
+  image: php:8.3-cli
+  before_script:
+    - apt-get update && apt-get install -y git unzip curl
+    - curl -sS https://getcomposer.org/installer | php
+    - php composer.phar install --no-interaction
+  script:
+    - vendor/bin/rector process --dry-run
+
+tests:
+  stage: code-quality
+  image: php:8.3-cli
+  before_script:
+    - apt-get update && apt-get install -y git unzip curl
+    - curl -sS https://getcomposer.org/installer | php
+    - php composer.phar install --no-interaction
+  script:
+    - php artisan test
