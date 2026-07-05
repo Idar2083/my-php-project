@@ -69,8 +69,10 @@ RUN composer install --no-dev --prefer-dist --no-progress --no-interaction --no-
 COPY app .
 
 # Laravel optimization
-RUN composer clear-cache && \
+RUN cp .env.example .env && \
+    composer clear-cache && \
     composer dump-autoload --optimize --no-dev && \
+    php artisan key:generate && \
     php artisan package:discover --ansi && \
     php artisan config:cache && \
     php artisan route:cache && \
