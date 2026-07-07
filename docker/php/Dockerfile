@@ -2,9 +2,17 @@ FROM php:8.3-fpm AS base
 
 WORKDIR /var/www/app
 
+COPY --from=mlocati/php-extension-installer:latest \
+    /usr/bin/install-php-extensions \
+    /usr/local/bin/
+
+RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+
+RUN chmod +x /usr/local/bin/install-php-extensions
+
 # System dependencies
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::ForceIPv4=true && \
+    apt-get install -y --no-install-recommends \
     bash \
     git \
     tzdata \
@@ -12,21 +20,27 @@ RUN apt-get update \
     zip \
     unzip \
     libfcgi-bin \
- && rm -rf /var/lib/apt/lists/*
+    librabbitmq-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install PHP extensions via mlocati
-COPY --from=mlocati/php-extension-installer:latest /usr/bin/install-php-extensions /usr/local/bin/
+RUN set -xe && install-php-extensions \
+    intl \
+    opcache \
+    pdo_pgsql \
+    zip \
+    exif \
+    mbstring
 
-RUN chmod +x /usr/local/bin/install-php-extensions && \
-    install-php-extensions \
-        intl \
-        opcache \
-        pdo_pgsql \
-        zip \
-        redis \
-        amqp \
-        exif \
-        mbstring
+RUN pecl install redis && docker-php-ext-enable redis
+
+RUN apt-get update && apt-get install -y \
+    librabbitmq-dev pkg-config
+
+RUN pecl install amqp && docker-php-ext-enable amqp
+
+# DEV ONLY
+RUN pecl install xdebug && docker-php-ext-enable xdebug
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
