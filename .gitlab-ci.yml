@@ -6,18 +6,21 @@ variables:
   DOCKER_HOST: unix:///var/run/docker.sock
   DOCKER_TLS_CERTDIR: ""
 
-composer:
-  stage: build
+default:
   image: composer:2
 
-default:
+composer:
+  stage: build
+
   before_script:
     - cd app
+
+  script:
     - composer install --no-interaction --prefer-dist --no-progress
 
   artifacts:
     paths:
-      - vendor/
+      - app/vendor/
     expire_in: 1h
 
 build:
