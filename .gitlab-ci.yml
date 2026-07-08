@@ -59,7 +59,7 @@ tests:
   variables:
     APP_ENV: testing
     DB_CONNECTION: pgsql
-    DB_HOST: 127.0.0.1
+    DB_HOST: postgres
     DB_PORT: 5432
     DB_DATABASE: pizza_app_test
     DB_USERNAME: postgres
@@ -73,7 +73,6 @@ tests:
     - build
   script:
     - cd app
-    - php artisan key:generate
     - php artisan jwt:secret --force
     - php artisan migrate --force
     - php artisan test
