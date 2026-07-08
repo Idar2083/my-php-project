@@ -59,4 +59,5 @@ tests:
   script:
     - cd app
     - touch database/database.sqlite
+    - php artisan migrate --force
     - php artisan test
