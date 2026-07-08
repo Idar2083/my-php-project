@@ -59,7 +59,7 @@ tests:
   variables:
     APP_ENV: testing
     DB_CONNECTION: pgsql
-    DB_HOST: postgres
+    DB_HOST: host.docker.internal
     DB_PORT: 5432
     DB_DATABASE: pizza_app_test
     DB_USERNAME: postgres
