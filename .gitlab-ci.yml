@@ -23,6 +23,7 @@ composer:
       - app/vendor/
     expire_in: 1h
 
+
 build:
   stage: build
   image: docker:latest
