@@ -57,9 +57,10 @@ tests:
     - name: postgres:15-alpine
       alias: postgres_test_server
   variables:
+    FF_NETWORK_PER_BUILD: "true"
     APP_ENV: testing
     DB_CONNECTION: pgsql
-    DB_HOST: host.docker.internal
+    DB_HOST: postgres
     DB_PORT: 5432
     DB_DATABASE: pizza_app_test
     DB_USERNAME: postgres
