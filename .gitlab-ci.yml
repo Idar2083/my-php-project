@@ -68,12 +68,12 @@ tests:
     POSTGRES_DB: pizza_app_test
     POSTGRES_USER: postgres
     POSTGRES_PASSWORD: postgres
-    APP_KEY: base64:base64+4x9dcfa76875e148b44dc6bf26ee47544bb3d5b11b=
   needs:
     - composer
     - build
   script:
     - cd app
+    - export APP_KEY=$(php artisan key:generate --show)
     - php artisan jwt:secret --force
     - php artisan migrate --force
     - php artisan test
