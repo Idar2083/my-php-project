@@ -56,6 +56,9 @@ tests:
   needs:
     - composer
     - build
+  before_script:
+    - cd app
+    - touch database/database.sqlite
   script:
     - cd app
     - php artisan test
