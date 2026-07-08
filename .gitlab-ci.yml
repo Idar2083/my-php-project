@@ -2,53 +2,65 @@ stages:
   - build
   - code-quality
 
+variables:
+  DOCKER_HOST: unix:///var/run/docker.sock
+  DOCKER_TLS_CERTDIR: ""
+
+composer:
+  stage: build
+  image: composer:2
+
+  script:
+  - composer install --no-interaction --prefer-dist --no-progress
+
+  artifacts:
+    paths:
+      - vendor/
+    expire_in: 1h
+
 build:
   stage: build
   image: docker:latest
-  variables:
-    DOCKER_HOST: unix:///var/run/docker.sock
-    DOCKER_TLS_CERTDIR: ""
+
   script:
     - docker build -f docker/php/Dockerfile -t pizza-backend .
 
 phpstan:
   stage: code-quality
-  image: php:8.3-cli
-  before_script:
-    - apt-get update && apt-get install -y git unzip curl
-    - curl -sS https://getcomposer.org/installer | php
-    - php composer.phar install --no-interaction
+  image: composer:2
+
+  needs:
+    - composer
+
   script:
-    - vendor/bin/phpstan analyse
+    - vendor/bin/phpstan analyse app routes config database
 
 php-cs-fixer:
   stage: code-quality
-  image: php:8.3-cli
-  before_script:
-    - apt-get update && apt-get install -y git unzip curl
-    - curl -sS https://getcomposer.org/installer | php
-    - php composer.phar install --no-interaction
+  image: composer:2
+
+  needs:
+    - composer
+
   script:
     - vendor/bin/php-cs-fixer fix --dry-run --diff
 
 rector:
   stage: code-quality
-  image: php:8.3-cli
-  before_script:
-    - apt-get update && apt-get install -y git unzip curl
-    - curl -sS https://getcomposer.org/installer | php
-    - php composer.phar install --no-interaction
+  image: composer:2
+
+  needs:
+    - composer
+
   script:
     - vendor/bin/rector process --dry-run
 
 tests:
   stage: code-quality
-  image: php:8.3-cli
-  before_script:
-    - apt-get update && apt-get install -y git unzip curl libpq-dev
-    - docker-php-ext-install pdo_pgsql
-    - curl -sS https://getcomposer.org | php
-    - php composer.phar install --no-interaction
+  image: composer:2
+
+  needs:
+    - composer
+
   script:
-    - vendor/bin/pint --test
     - php artisan test
