@@ -10,8 +10,10 @@ composer:
   stage: build
   image: composer:2
 
-  script:
-  - composer install --no-interaction --prefer-dist --no-progress
+default:
+  before_script:
+    - cd app
+    - composer install --no-interaction --prefer-dist --no-progress
 
   artifacts:
     paths:
