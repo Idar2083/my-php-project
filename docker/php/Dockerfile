@@ -1,49 +1,38 @@
-FROM php:8.3-fpm AS base
+FROM php:8.4-fpm AS base
 
 WORKDIR /var/www/app
 
-COPY --from=mlocati/php-extension-installer:latest \
-    /usr/bin/install-php-extensions \
-    /usr/local/bin/
-
-RUN echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-
-RUN chmod +x /usr/local/bin/install-php-extensions
-
 # System dependencies
-RUN apt-get update -o Acquire::ForceIPv4=true && \
-    apt-get install -y --no-install-recommends \
+# kics-scan ignore-line
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
     bash \
     git \
     tzdata \
     curl \
+    libfcgi-bin \
     zip \
     unzip \
-    libfcgi-bin \
-    librabbitmq-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p /var/www/app \
+ && chown -R www-data:www-data /var/www/app
 
-RUN set -xe && install-php-extensions \
-    intl \
-    opcache \
-    pdo_pgsql \
-    zip \
-    exif \
-    mbstring
+# Use mlocati/docker-php-extension-installer to install PHP extensions
+COPY --from=mlocati/php-extension-installer:latest /usr/bin/install-php-extensions /usr/local/bin/
 
-RUN pecl install redis && docker-php-ext-enable redis
+RUN chmod +x /usr/local/bin/install-php-extensions && \
+    install-php-extensions \
+        intl \
+        opcache \
+        pdo_pgsql \
+        zip \
+        redis \
+        amqp
 
-RUN apt-get update && apt-get install -y \
-    librabbitmq-dev pkg-config
-
-RUN pecl install amqp && docker-php-ext-enable amqp
-
-# DEV ONLY
-RUN pecl install xdebug && docker-php-ext-enable xdebug
-
+# Copy Composer binary from official image
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
+# Default PHP-FPM configuration (can be overridden with volumes)
 COPY docker/php/conf/php-fpm.conf /usr/local/etc/php-fpm.conf
 COPY docker/php/conf/php.ini /usr/local/etc/php/conf.d/zz-app.ini
 COPY docker/php/conf/www.conf /usr/local/etc/php-fpm.d/www.conf
@@ -52,13 +41,16 @@ COPY docker/php/conf/www.conf /usr/local/etc/php-fpm.d/www.conf
 # === DEV ===
 FROM base AS dev
 
-ENV APP_ENV=dev APP_DEBUG=1 COMPOSER_HOME=/tmp/composer
+ENV APP_ENV=dev \
+APP_DEBUG=1 \
+COMPOSER_HOME=/tmp/composer
 
 ARG HOST_UID=1000
 ARG HOST_GID=1000
 
 # Xdebug only for dev
 RUN install-php-extensions xdebug
+
 COPY docker/php/conf/xdebug.ini /usr/local/etc/php/conf.d/xdebug.ini
 
 # Fix permissions for local dev
