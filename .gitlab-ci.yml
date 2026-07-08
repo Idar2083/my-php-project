@@ -59,14 +59,15 @@ tests:
   variables:
     APP_ENV: testing
     DB_CONNECTION: pgsql
-    DB_HOST: postgres_test_server
+    DB_HOST: 127.0.0.1
     DB_PORT: 5432
     DB_DATABASE: pizza_app_test
     DB_USERNAME: postgres
     DB_PASSWORD: postgres
     POSTGRES_DB: pizza_app_test
     POSTGRES_USER: postgres
-    POSTGRES_PASSWORD: super_secure_password
+    POSTGRES_PASSWORD: postgres
+    APP_KEY: base64:a39dcfa76875e148b44dc6bf26ee47544bb3d5b11bf45a=
   needs:
     - composer
     - build
