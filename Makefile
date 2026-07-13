@@ -29,7 +29,7 @@ bash:
 composer-install:
 	docker compose exec -T php sh -lc 'mkdir -p vendor && composer install --no-interaction --prefer-dist'
 
-jwt_secret:
+jwt-secret:
 	docker compose exec -T php php artisan jwt:secret --force
 
 up-prod:
@@ -41,3 +41,18 @@ down-prod:
 
 logs-prod:
 	docker compose -f docker-compose.prod.yml logs -f
+
+cs:
+	cd app && vendor/bin/php-cs-fixer fix
+
+cs-dr:
+	cd app && vendor/bin/php-cs-fixer fix --dry-run --diff
+
+phpstan:
+	cd app && vendor/bin/phpstan analyse
+
+rector:
+	cd app && vendor/bin/rector process
+
+rector-dr:
+	cd app && vendor/bin/rector process --dry-run

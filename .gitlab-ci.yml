@@ -1,0 +1,75 @@
+stages:
+  - build
+  - code-quality
+
+variables:
+  DOCKER_HOST: unix:///var/run/docker.sock
+  DOCKER_TLS_CERTDIR: ""
+
+composer:
+  stage: build
+  image: composer:2
+  script:
+    - composer install --working-dir=app --no-interaction --prefer-dist --no-progress
+  artifacts:
+    paths:
+      - app/vendor
+    expire_in: 1h
+
+build:
+  stage: build
+  image: docker:latest
+  script:
+    - docker build -f docker/php/Dockerfile -t pizza-backend .
+
+phpstan:
+  stage: code-quality
+  image: pizza-backend:latest
+  needs:
+    - composer
+  script:
+    - app/vendor/bin/phpstan analyse app/app app/routes app/config app/database
+
+php-cs-fixer:
+  stage: code-quality
+  image: pizza-backend:latest
+  needs:
+    - composer
+  script:
+    - app/vendor/bin/php-cs-fixer fix --dry-run --diff
+
+rector:
+  stage: code-quality
+  image: pizza-backend:latest
+  needs:
+    - composer
+  script:
+    - app/vendor/bin/rector process --dry-run
+
+tests:
+  stage: code-quality
+  image: pizza-backend:latest
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+  variables:
+    FF_NETWORK_PER_BUILD: "true"
+    APP_ENV: testing
+    DB_CONNECTION: pgsql
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_DATABASE: pizza_app_test
+    DB_USERNAME: postgres
+    DB_PASSWORD: postgres
+    POSTGRES_DB: pizza_app_test
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+  needs:
+    - composer
+    - build
+  script:
+    - cd app
+    - export APP_KEY=$(php artisan key:generate --show)
+    - php artisan jwt:secret --force
+    - php artisan migrate --force
+    - php artisan test

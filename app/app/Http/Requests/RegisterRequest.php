@@ -8,6 +8,9 @@ use Illuminate\Validation\Rules\Password;
 
 class RegisterRequest extends ApiRequest
 {
+    /**
+     * @return array<string, mixed>
+     */
     public function rules(): array
     {
         return [
