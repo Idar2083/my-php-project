@@ -20,7 +20,7 @@ class ProductController extends Controller
         return ProductResource::collection($products);
     }
 
-    public function store(StoreProductRequest $request)
+    public function store(StoreProductRequest $request): Response
     {
         $validate = $request->validated();
 
@@ -29,14 +29,14 @@ class ProductController extends Controller
         return (new ProductResource($product))->response()->setStatusCode(Response::HTTP_CREATED);
     }
 
-    public function show(string $id)
+    public function show(string $id): ProductResource
     {
         $product = Product::findOrFail($id);
 
         return new ProductResource($product);
     }
 
-    public function update(UpdateProductRequest $request, string $id)
+    public function update(UpdateProductRequest $request, string $id): ProductResource
     {
         $product = Product::findOrFail($id);
         $validate = $request->validated();
@@ -46,7 +46,7 @@ class ProductController extends Controller
         return new ProductResource($product);
     }
 
-    public function destroy(string $id)
+    public function destroy(string $id): Response
     {
         $product = Product::findOrFail($id);
         $product->delete();

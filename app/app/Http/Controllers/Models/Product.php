@@ -23,12 +23,14 @@ class Product extends Model
             'weight' => 'decimal:3',
         ];
     }
-
+    /**
+     * @return Attribute<float, int>
+     */
     protected function price(): Attribute
     {
         return Attribute::make(
-            get: static fn (int $value) => $value / 100,
-            set: static fn (float $value) => (int) ($value * 100),
+            get: static fn (int $value): float => $value / 100,
+            set: static fn (float $value): int => (int) ($value * 100),
         );
     }
 }

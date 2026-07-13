@@ -6,6 +6,9 @@ namespace App\Http\Requests;
 
 class LoginRequest extends ApiRequest
 {
+    /**
+     * @return array<string, mixed>
+     */
     public function rules(): array
     {
         return [

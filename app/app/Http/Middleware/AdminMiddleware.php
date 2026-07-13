@@ -5,13 +5,12 @@ declare(strict_types=1);
 namespace App\Http\Middleware;
 
 use App\Enums\UserRole;
-use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 class AdminMiddleware
 {
-    public function handle(Request $request, Closure $next): Response
+    public function handle(Request $request, \Closure $next): Response
     {
         $user = auth('api')->user();
 

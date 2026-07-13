@@ -6,9 +6,6 @@ variables:
   DOCKER_HOST: unix:///var/run/docker.sock
   DOCKER_TLS_CERTDIR: ""
 
-default:
-  image: composer:2
-
 composer:
   stage: build
   image: composer:2
@@ -27,8 +24,7 @@ build:
 
 phpstan:
   stage: code-quality
-  image: composer:2
-  allow_failure: true
+  image: pizza-backend:latest
   needs:
     - composer
   script:
@@ -36,7 +32,7 @@ phpstan:
 
 php-cs-fixer:
   stage: code-quality
-  image: composer:2
+  image: pizza-backend:latest
   needs:
     - composer
   script:
@@ -44,7 +40,7 @@ php-cs-fixer:
 
 rector:
   stage: code-quality
-  image: composer:2
+  image: pizza-backend:latest
   needs:
     - composer
   script:
@@ -55,7 +51,7 @@ tests:
   image: pizza-backend:latest
   services:
     - name: postgres:15-alpine
-      alias: postgres_test_server
+      alias: postgres
   variables:
     FF_NETWORK_PER_BUILD: "true"
     APP_ENV: testing

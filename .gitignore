@@ -1,9 +1,9 @@
+.env
 .env.local
 .idea/
 .vscode/
 .DS_Store
 *.log
-app/.env.testing.local
 
 docker/data
 docker/volumes
@@ -12,4 +12,3 @@ node_modules
 vendor
 
 bootstrap/cache/*.php
-.env

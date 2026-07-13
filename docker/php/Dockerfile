@@ -3,7 +3,6 @@ FROM php:8.4-fpm AS base
 WORKDIR /var/www/app
 
 # System dependencies
-# kics-scan ignore-line
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     bash \
