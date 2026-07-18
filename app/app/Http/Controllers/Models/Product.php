@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Models;
 
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Product extends Model
 {
@@ -23,6 +24,7 @@ class Product extends Model
             'weight' => 'decimal:3',
         ];
     }
+
     /**
      * @return Attribute<float, int>
      */
@@ -32,5 +34,21 @@ class Product extends Model
             get: static fn (int $value): float => $value / 100,
             set: static fn (float $value): int => (int) ($value * 100),
         );
+    }
+
+    /**
+     * @return HasMany<CartItem, $this>
+     */
+    protected function cartItems(): HasMany
+    {
+        return $this->hasMany(CartItem::class);
+    }
+
+    /**
+     * @return HasMany<OrderItem, $this>
+     */
+    public function orderItems(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
     }
 }
