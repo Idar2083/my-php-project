@@ -17,6 +17,8 @@ class CartService
 
     private const int MAX_DRINKS = 20;
 
+    private const int TRANSACTION_ATTEMPTS = 3;
+
     public function getCart(User $user): Cart
     {
         $cart = Cart::query()->firstOrCreate([
@@ -42,7 +44,6 @@ class CartService
                 ]);
 
                 $cart->refresh();
-
             }
 
             $cart->wasRecentlyCreated = false;
@@ -77,7 +78,7 @@ class CartService
             }
 
             return $cart->load('items.product');
-        });
+        }, self::TRANSACTION_ATTEMPTS);
     }
 
     public function updateItem(User $user, int $itemId, int $quantity): Cart
@@ -108,7 +109,7 @@ class CartService
             ]);
 
             return $cart->load('items.product');
-        });
+        }, self::TRANSACTION_ATTEMPTS);
     }
 
     public function removeItem(User $user, int $itemId): Cart
@@ -128,7 +129,7 @@ class CartService
             $item->delete();
 
             return $cart->load('items.product');
-        });
+        }, self::TRANSACTION_ATTEMPTS);
     }
 
     public function clear(User $user): Cart
@@ -144,7 +145,7 @@ class CartService
                 ->delete();
 
             return $cart->load('items.product');
-        });
+        }, self::TRANSACTION_ATTEMPTS);
     }
 
     private function validateCategoryLimit(
