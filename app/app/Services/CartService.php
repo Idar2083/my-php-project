@@ -15,15 +15,17 @@ class CartService
 {
     private const int MAX_PIZZAS = 10;
 
-    private const int MAX_DRINKS = 10;
+    private const int MAX_DRINKS = 20;
 
     public function getCart(User $user): Cart
     {
-        return Cart::query()
-            ->firstOrCreate([
-                'user_id' => $user->id,
-            ])
-            ->load('items.products');
+        $cart = Cart::query()->firstOrCreate([
+            'user_id' => $user->id,
+        ]);
+
+        $cart->wasRecentlyCreated = false;
+
+        return $cart->load('items.product');
     }
 
     public function addItem(User $user, int $productId, int $quantity): Cart
@@ -40,7 +42,10 @@ class CartService
                 ]);
 
                 $cart->refresh();
+
             }
+
+            $cart->wasRecentlyCreated = false;
 
             $product = Product::query()->findOrFail($productId);
 
@@ -71,7 +76,7 @@ class CartService
                 ]);
             }
 
-            return $cart->load('items.products');
+            return $cart->load('items.product');
         });
     }
 

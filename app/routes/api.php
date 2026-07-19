@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CartController;
+use App\Http\Controllers\OrderController;
 use App\Http\Controllers\ProductController;
 use Illuminate\Support\Facades\Route;
 
@@ -29,5 +30,11 @@ Route::middleware(['auth:api'])->group(function (): void {
         Route::put('/items/{itemId}', [CartController::class, 'update']);
         Route::delete('/items/{itemId}', [CartController::class, 'destroy']);
         Route::delete('/', [CartController::class, 'clear']);
+    });
+
+    Route::prefix('orders')->group(static function (): void {
+        Route::get('/', [OrderController::class, 'index']);
+        Route::get('/{orderId}', [OrderController::class, 'show']);
+        Route::post('/', [OrderController::class, 'store']);
     });
 });
