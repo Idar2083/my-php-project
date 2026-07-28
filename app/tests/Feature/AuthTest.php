@@ -14,33 +14,6 @@ class AuthTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function registerData(): array
-    {
-        return [
-            'name' => 'John Doe',
-            'email' => 'john@example.com',
-            'password' => 'Password1!',
-        ];
-    }
-
-    private function createUser(array $attributes = []): User
-    {
-        return User::factory()->create(
-            array_merge([
-                'email' => 'john@example.com',
-                'password' => 'Password1!',
-            ], $attributes),
-        );
-    }
-
-    private function loginCredentials(): array
-    {
-        return [
-            'email' => 'john@example.com',
-            'password' => 'Password1!',
-        ];
-    }
-
     public function test_user_can_register(): void
     {
         $response = $this->postJson(
@@ -90,5 +63,32 @@ class AuthTest extends TestCase
             ->postJson('/api/logout');
 
         $response->assertStatus(Response::HTTP_OK);
+    }
+
+    private function registerData(): array
+    {
+        return [
+            'name' => 'John Doe',
+            'email' => 'john@example.com',
+            'password' => 'Password1!',
+        ];
+    }
+
+    private function createUser(array $attributes = []): User
+    {
+        return User::factory()->create(
+            array_merge([
+                'email' => 'john@example.com',
+                'password' => 'Password1!',
+            ], $attributes),
+        );
+    }
+
+    private function loginCredentials(): array
+    {
+        return [
+            'email' => 'john@example.com',
+            'password' => 'Password1!',
+        ];
     }
 }

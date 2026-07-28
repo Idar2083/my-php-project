@@ -16,43 +16,6 @@ class ProductTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function validProductData(): array
-    {
-        return [
-            'name' => 'Pepperoni',
-            'category' => 'Pizza',
-            'description' => '...',
-            'price' => 799,
-            'weight' => 0.55,
-        ];
-    }
-
-    private function createProduct(): Product
-    {
-        return Product::create($this->validProductData());
-    }
-
-    private function createAdmin(): User
-    {
-        return User::factory()->create([
-            'role' => UserRole::ADMIN,
-        ]);
-    }
-
-    private function tokenFor(User $user): string
-    {
-        return JWTAuth::fromUser($user);
-    }
-
-    private function authHeaders(): array
-    {
-        $admin = $this->createAdmin();
-
-        return [
-            'Authorization' => 'Bearer ' . $this->tokenFor($admin),
-        ];
-    }
-
     // create
     public function test_can_create_product(): void
     {
@@ -227,5 +190,42 @@ class ProductTest extends TestCase
             ->deleteJson('/api/products/' . $missingProductId);
 
         $response->assertStatus(Response::HTTP_NOT_FOUND);
+    }
+
+    private function validProductData(): array
+    {
+        return [
+            'name' => 'Pepperoni',
+            'category' => 'Pizza',
+            'description' => '...',
+            'price' => 799,
+            'weight' => 0.55,
+        ];
+    }
+
+    private function createProduct(): Product
+    {
+        return Product::create($this->validProductData());
+    }
+
+    private function createAdmin(): User
+    {
+        return User::factory()->create([
+            'role' => UserRole::ADMIN,
+        ]);
+    }
+
+    private function tokenFor(User $user): string
+    {
+        return JWTAuth::fromUser($user);
+    }
+
+    private function authHeaders(): array
+    {
+        $admin = $this->createAdmin();
+
+        return [
+            'Authorization' => 'Bearer ' . $this->tokenFor($admin),
+        ];
     }
 }
