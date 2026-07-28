@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
+use App\DTO\AddressDto;
 use App\Http\Controllers\Models\User;
 use App\Http\Requests\StoreOrderRequest;
 use App\Http\Resources\OrderResource;
@@ -25,6 +26,7 @@ class OrderController extends Controller
 
         /**
          * @var array{
+         *     delivery_method: string,
          *      region: string,
          *      city: string,
          *      street: string,
@@ -36,8 +38,10 @@ class OrderController extends Controller
          */
         $validated = $request->validated();
 
+        $address = AddressDto::fromArray($validated);
+
         return new OrderResource(
-            $this->orderService->create($user, $validated),
+            $this->orderService->create($user, $address),
         );
     }
 

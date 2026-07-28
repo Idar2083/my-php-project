@@ -27,20 +27,6 @@ class User extends Authenticatable implements JWTSubject
     use HasFactory;
     use Notifiable;
 
-    protected static function newFactory(): UserFactory
-    {
-        return UserFactory::new();
-    }
-
-    protected function casts(): array
-    {
-        return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-            'role' => UserRole::class,
-        ];
-    }
-
     public function getJWTIdentifier()
     {
         return $this->getKey();
@@ -68,5 +54,19 @@ class User extends Authenticatable implements JWTSubject
     public function cart(): HasOne
     {
         return $this->hasOne(Cart::class);
+    }
+
+    protected static function newFactory(): UserFactory
+    {
+        return UserFactory::new();
+    }
+
+    protected function casts(): array
+    {
+        return [
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
+            'role' => UserRole::class,
+        ];
     }
 }

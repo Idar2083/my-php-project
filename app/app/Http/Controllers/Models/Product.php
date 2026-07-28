@@ -18,6 +18,14 @@ class Product extends Model
         'category',
     ];
 
+    /**
+     * @return HasMany<OrderItem, $this>
+     */
+    public function orderItems(): HasMany
+    {
+        return $this->hasMany(OrderItem::class);
+    }
+
     protected function casts(): array
     {
         return [
@@ -42,13 +50,5 @@ class Product extends Model
     protected function cartItems(): HasMany
     {
         return $this->hasMany(CartItem::class);
-    }
-
-    /**
-     * @return HasMany<OrderItem, $this>
-     */
-    public function orderItems(): HasMany
-    {
-        return $this->hasMany(OrderItem::class);
     }
 }

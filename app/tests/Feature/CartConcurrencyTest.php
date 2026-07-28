@@ -20,68 +20,6 @@ class CartConcurrencyTest extends TestCase
 
     private Cart $cart;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->user = User::factory()->create();
-
-        $this->cart = Cart::query()->create([
-            'user_id' => $this->user->id,
-        ]);
-    }
-
-    private function createProduct(string $name): Product
-    {
-        return Product::query()->create([
-            'name' => $name,
-            'category' => 'pizza',
-            'description' => 'Concurrency test product',
-            'price' => 500,
-            'weight' => 0.55,
-        ]);
-    }
-
-    private function createCartItem(
-        Product $product,
-        int $quantity,
-    ): CartItem {
-        return CartItem::query()->create([
-            'cart_id' => $this->cart->id,
-            'product_id' => $product->id,
-            'quantity' => $quantity,
-        ]);
-    }
-
-    private function createProcess(
-        Product $product,
-        int $quantity,
-    ): Process {
-        return new Process([
-            PHP_BINARY,
-            base_path('tests/Support/concurrency_cart_worker.php'),
-            (string) $this->user->id,
-            (string) $product->id,
-            (string) $quantity,
-        ]);
-    }
-
-    /**
-     * @return array{Process, Process}
-     */
-    private function runConcurrently(
-        Process $first,
-        Process $second,
-    ): array {
-        $first->start();
-        $second->start();
-
-        $first->wait();
-        $second->wait();
-
-        return [$first, $second];
-    }
-
     public function test_parallel_additions_to_same_item_do_not_cause_lost_update(): void
     {
         $product = $this->createProduct('Pepperoni');
@@ -144,5 +82,67 @@ class CartConcurrencyTest extends TestCase
             10,
             (int) $item->fresh()->quantity,
         );
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->user = User::factory()->create();
+
+        $this->cart = Cart::query()->create([
+            'user_id' => $this->user->id,
+        ]);
+    }
+
+    private function createProduct(string $name): Product
+    {
+        return Product::query()->create([
+            'name' => $name,
+            'category' => 'pizza',
+            'description' => 'Concurrency test product',
+            'price' => 500,
+            'weight' => 0.55,
+        ]);
+    }
+
+    private function createCartItem(
+        Product $product,
+        int $quantity,
+    ): CartItem {
+        return CartItem::query()->create([
+            'cart_id' => $this->cart->id,
+            'product_id' => $product->id,
+            'quantity' => $quantity,
+        ]);
+    }
+
+    private function createProcess(
+        Product $product,
+        int $quantity,
+    ): Process {
+        return new Process([
+            PHP_BINARY,
+            base_path('tests/Support/concurrency_cart_worker.php'),
+            (string) $this->user->id,
+            (string) $product->id,
+            (string) $quantity,
+        ]);
+    }
+
+    /**
+     * @return array{Process, Process}
+     */
+    private function runConcurrently(
+        Process $first,
+        Process $second,
+    ): array {
+        $first->start();
+        $second->start();
+
+        $first->wait();
+        $second->wait();
+
+        return [$first, $second];
     }
 }

@@ -19,6 +19,7 @@ class StoreOrderRequest extends ApiRequest
             'apartment' => ['nullable', 'string', 'max:255'],
             'entrance' => ['nullable', 'string', 'max:255'],
             'postal_code' => ['required', 'string', 'max:255'],
+            'delivery_method' => ['required', 'string'],
         ];
     }
 }

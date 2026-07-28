@@ -17,6 +17,7 @@ class OrderResource extends JsonResource
             'id' => $this->resource->id,
             'status' => $this->resource->status,
             'total_price' => $this->resource->total_price,
+            'delivery_method' => $this->resource->delivery_method,
             'address' => [
                 'region' => $this->resource->region,
                 'city' => $this->resource->city,

@@ -19,68 +19,6 @@ class OrderTest extends TestCase
 
     private User $user;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->user = User::factory()->create();
-
-        $this->withHeader(
-            'Authorization',
-            'Bearer ' . JWTAuth::fromUser($this->user),
-        );
-    }
-
-    /**
-     * @return array<string, string>
-     */
-    private function address(): array
-    {
-        return [
-            'region' => 'Moscow Region',
-            'city' => 'Moscow',
-            'street' => 'Tverskaya',
-            'house' => '1',
-            'entrance' => '2',
-            'apartment' => '10',
-            'postal_code' => '125009',
-        ];
-    }
-
-    private function addProductToCart(
-        string $name = 'Pepperoni',
-        int $quantity = 2,
-        int $price = 500,
-    ): Product {
-        $product = Product::query()->create([
-            'name' => $name,
-            'category' => 'pizza',
-            'description' => 'Test product',
-            'price' => $price,
-            'weight' => 0.55,
-        ]);
-
-        $cart = Cart::query()->firstOrCreate([
-            'user_id' => $this->user->id,
-        ]);
-
-        CartItem::query()->create([
-            'cart_id' => $cart->id,
-            'product_id' => $product->id,
-            'quantity' => $quantity,
-        ]);
-
-        return $product;
-    }
-
-    private function createOrder(): TestResponse
-    {
-        return $this->postJson(
-            '/api/orders',
-            $this->address(),
-        );
-    }
-
     public function test_can_create_order(): void
     {
         $product = $this->addProductToCart(
@@ -227,5 +165,68 @@ class OrderTest extends TestCase
 
         $this->getJson('/api/orders')
             ->assertUnauthorized();
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->user = User::factory()->create();
+
+        $this->withHeader(
+            'Authorization',
+            'Bearer ' . JWTAuth::fromUser($this->user),
+        );
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function address(): array
+    {
+        return [
+            'delivery_method' => 'delivery',
+            'region' => 'Moscow Region',
+            'city' => 'Moscow',
+            'street' => 'Tverskaya',
+            'house' => '1',
+            'entrance' => '2',
+            'apartment' => '10',
+            'postal_code' => '125009',
+        ];
+    }
+
+    private function addProductToCart(
+        string $name = 'Pepperoni',
+        int $quantity = 2,
+        int $price = 500,
+    ): Product {
+        $product = Product::query()->create([
+            'name' => $name,
+            'category' => 'pizza',
+            'description' => 'Test product',
+            'price' => $price,
+            'weight' => 0.55,
+        ]);
+
+        $cart = Cart::query()->firstOrCreate([
+            'user_id' => $this->user->id,
+        ]);
+
+        CartItem::query()->create([
+            'cart_id' => $cart->id,
+            'product_id' => $product->id,
+            'quantity' => $quantity,
+        ]);
+
+        return $product;
+    }
+
+    private function createOrder(): TestResponse
+    {
+        return $this->postJson(
+            '/api/orders',
+            $this->address(),
+        );
     }
 }

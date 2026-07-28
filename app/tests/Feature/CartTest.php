@@ -17,51 +17,6 @@ class CartTest extends TestCase
 
     private User $user;
 
-    protected function setUp(): void
-    {
-        parent::setUp();
-
-        $this->user = User::factory()->create();
-    }
-
-    private function auth(): self
-    {
-        return $this->withHeader(
-            'Authorization',
-            'Bearer ' . JWTAuth::fromUser($this->user),
-        );
-    }
-
-    private function createProduct(
-        string $name = 'Pepperoni',
-        string $category = 'pizza',
-    ): Product {
-        return Product::create([
-            'name' => $name,
-            'category' => $category,
-            'description' => 'Test product',
-            'price' => 799,
-            'weight' => 0.55,
-        ]);
-    }
-
-    private function addProduct(Product $product, int $quantity = 1): CartItem
-    {
-        $this->auth()
-            ->postJson('/api/cart/items', [
-                'product_id' => $product->id,
-                'quantity' => $quantity,
-            ])
-            ->assertOk();
-
-        return CartItem::query()
-            ->whereHas('cart', function ($query): void {
-                $query->where('user_id', $this->user->id);
-            })
-            ->where('product_id', $product->id)
-            ->firstOrFail();
-    }
-
     public function test_can_get_empty_cart(): void
     {
         $this->auth()
@@ -221,5 +176,134 @@ class CartTest extends TestCase
     {
         $this->getJson('/api/cart')
             ->assertUnauthorized();
+    }
+
+    public function test_can_update_pizza_quantity_to_limit(): void
+    {
+        $item = $this->addProduct(
+            $this->createProduct(),
+            2,
+        );
+
+        $this->auth()
+            ->putJson('/api/cart/items/' . $item->id, [
+                'quantity' => 10,
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('cart_items', [
+            'id' => $item->id,
+            'quantity' => 10,
+        ]);
+    }
+
+    public function test_cannot_update_pizza_quantity_over_limit(): void
+    {
+        $item = $this->addProduct(
+            $this->createProduct(),
+            2,
+        );
+
+        $this->auth()
+            ->putJson('/api/cart/items/' . $item->id, [
+                'quantity' => 11,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('quantity');
+
+        $this->assertDatabaseHas('cart_items', [
+            'id' => $item->id,
+            'quantity' => 2,
+        ]);
+    }
+
+    public function test_can_update_drink_quantity_to_limit(): void
+    {
+        $item = $this->addProduct(
+            $this->createProduct(
+                'Cola',
+                'drink',
+            ),
+            2,
+        );
+
+        $this->auth()
+            ->putJson('/api/cart/items/' . $item->id, [
+                'quantity' => 20,
+            ])
+            ->assertOk();
+
+        $this->assertDatabaseHas('cart_items', [
+            'id' => $item->id,
+            'quantity' => 20,
+        ]);
+    }
+
+    public function test_cannot_update_drink_quantity_over_limit(): void
+    {
+        $item = $this->addProduct(
+            $this->createProduct(
+                'Cola',
+                'drink',
+            ),
+            2,
+        );
+
+        $this->auth()
+            ->putJson('/api/cart/items/' . $item->id, [
+                'quantity' => 21,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('quantity');
+
+        $this->assertDatabaseHas('cart_items', [
+            'id' => $item->id,
+            'quantity' => 2,
+        ]);
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->user = User::factory()->create();
+    }
+
+    private function auth(): self
+    {
+        return $this->withHeader(
+            'Authorization',
+            'Bearer ' . JWTAuth::fromUser($this->user),
+        );
+    }
+
+    private function createProduct(
+        string $name = 'Pepperoni',
+        string $category = 'pizza',
+    ): Product {
+        return Product::create([
+            'name' => $name,
+            'category' => $category,
+            'description' => 'Test product',
+            'price' => 799,
+            'weight' => 0.55,
+        ]);
+    }
+
+    private function addProduct(Product $product, int $quantity = 1): CartItem
+    {
+        $this->auth()
+            ->postJson('/api/cart/items', [
+                'product_id' => $product->id,
+                'quantity' => $quantity,
+            ])
+            ->assertOk();
+
+        return CartItem::query()
+            ->whereHas('cart', function ($query): void {
+                $query->where('user_id', $this->user->id);
+            })
+            ->where('product_id', $product->id)
+            ->firstOrFail();
     }
 }

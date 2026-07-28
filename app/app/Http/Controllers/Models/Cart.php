@@ -10,6 +10,10 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Cart extends Model
 {
+    public const int MAX_PIZZAS = 10;
+
+    public const int MAX_DRINKS = 20;
+
     protected $fillable = [
         'user_id',
     ];

@@ -15,6 +15,7 @@ class Order extends Model
         'user_id',
         'status',
         'total_price',
+        'delivery_method',
         'region',
         'city',
         'street',
@@ -23,14 +24,6 @@ class Order extends Model
         'apartment',
         'postal_code',
     ];
-
-    protected function casts(): array
-    {
-        return [
-            'status' => OrderStatus::class,
-            'total_price' => 'decimal:2',
-        ];
-    }
 
     /**
      * @return BelongsTo<User, $this>
@@ -46,5 +39,13 @@ class Order extends Model
     public function items(): HasMany
     {
         return $this->hasMany(OrderItem::class);
+    }
+
+    protected function casts(): array
+    {
+        return [
+            'status' => OrderStatus::class,
+            'total_price' => 'decimal:2',
+        ];
     }
 }

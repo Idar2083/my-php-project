@@ -16,13 +16,6 @@ class OrderItem extends Model
         'price',
     ];
 
-    protected function casts(): array
-    {
-        return [
-            'price' => 'decimal:2',
-        ];
-    }
-
     /**
      * @return BelongsTo<Order, $this>
      */
@@ -37,5 +30,12 @@ class OrderItem extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    protected function casts(): array
+    {
+        return [
+            'price' => 'decimal:2',
+        ];
     }
 }

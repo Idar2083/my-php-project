@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\DTO\AddressDto;
 use App\Enums\OrderStatus;
 use App\Http\Controllers\Models\Cart;
 use App\Http\Controllers\Models\Order;
@@ -15,18 +16,9 @@ use Illuminate\Validation\ValidationException;
 
 class OrderService
 {
-    /**
-     * @param array{
-     *     region: string,
-     *     city: string,
-     *     street: string,
-     *     house: string,
-     *     entrance?: string|null,
-     *     apartment?: string|null,
-     *     postal_code: string
-     * } $address
-     */
-    public function create(User $user, array $address): Order
+    private const int MAX_ORDER_ITEMS = 30;
+
+    public function create(User $user, AddressDto $address): Order
     {
         return DB::transaction(function () use ($user, $address): Order {
             $cart = Cart::query()
@@ -40,6 +32,19 @@ class OrderService
                 ]);
             }
 
+            $totalItems = (int) $cart->items->sum('quantity');
+
+            if ($totalItems > self::MAX_ORDER_ITEMS) {
+                throw ValidationException::withMessages([
+                    'cart' => [
+                        sprintf(
+                            'The maximum order size is %d items.',
+                            self::MAX_ORDER_ITEMS,
+                        ),
+                    ],
+                ]);
+            }
+
             $totalPrice = 0.0;
 
             foreach ($cart->items as $item) {
@@ -50,13 +55,14 @@ class OrderService
                 'user_id' => $user->id,
                 'status' => OrderStatus::CREATED,
                 'total_price' => $totalPrice,
-                'region' => $address['region'],
-                'city' => $address['city'],
-                'street' => $address['street'],
-                'house' => $address['house'],
-                'entrance' => $address['entrance'] ?? null,
-                'apartment' => $address['apartment'] ?? null,
-                'postal_code' => $address['postal_code'],
+                'delivery_method' => $address->deliveryMethod,
+                'region' => $address->region,
+                'city' => $address->city,
+                'street' => $address->street,
+                'house' => $address->house,
+                'entrance' => $address->entrance,
+                'apartment' => $address->apartment,
+                'postal_code' => $address->postalCode,
             ]);
 
             foreach ($cart->items as $item) {

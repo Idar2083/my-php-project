@@ -8,16 +8,15 @@ use App\Http\Controllers\Models\Cart;
 use App\Http\Controllers\Models\CartItem;
 use App\Http\Controllers\Models\Product;
 use App\Http\Controllers\Models\User;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CartService
 {
-    private const int MAX_PIZZAS = 10;
-
-    private const int MAX_DRINKS = 20;
-
     private const int TRANSACTION_ATTEMPTS = 3;
+
+    private const string POSTGRES_UNIQUE_VIOLATION = '23505';
 
     public function getCart(User $user): Cart
     {
@@ -33,20 +32,7 @@ class CartService
     public function addItem(User $user, int $productId, int $quantity): Cart
     {
         return DB::transaction(function () use ($user, $productId, $quantity): Cart {
-            $cart = Cart::query()
-                ->where('user_id', $user->id)
-                ->lockForUpdate()
-                ->first();
-
-            if ($cart === null) {
-                $cart = Cart::query()->create([
-                    'user_id' => $user->id,
-                ]);
-
-                $cart->refresh();
-            }
-
-            $cart->wasRecentlyCreated = false;
+            $cart = $this->getOrCreateCart($user);
 
             $product = Product::query()->findOrFail($productId);
 
@@ -148,6 +134,43 @@ class CartService
         }, self::TRANSACTION_ATTEMPTS);
     }
 
+    private function getOrCreateCart(User $user): Cart
+    {
+        $cart = Cart::query()
+            ->where('user_id', $user->id)
+            ->lockForUpdate()
+            ->first();
+
+        if ($cart !== null) {
+            $cart->wasRecentlyCreated = false;
+
+            return $cart;
+        }
+
+        try {
+            $cart = Cart::query()->create([
+                'user_id' => $user->id,
+            ]);
+
+            $cart->wasRecentlyCreated = false;
+
+            return $cart;
+        } catch (QueryException $exception) {
+            if ($exception->getCode() !== self::POSTGRES_UNIQUE_VIOLATION) {
+                throw $exception;
+            }
+        }
+
+        $cart = Cart::query()
+            ->where('user_id', $user->id)
+            ->lockForUpdate()
+            ->firstOrFail();
+
+        $cart->wasRecentlyCreated = false;
+
+        return $cart;
+    }
+
     private function validateCategoryLimit(
         Cart $cart,
         Product $product,
@@ -168,8 +191,8 @@ class CartService
         $totalQuantity = $currentQuantity + $newQuantity;
 
         $limit = match ($product->category) {
-            'pizza' => self::MAX_PIZZAS,
-            'drink' => self::MAX_DRINKS,
+            'pizza' => Cart::MAX_PIZZAS,
+            'drink' => Cart::MAX_DRINKS,
             default => throw ValidationException::withMessages([
                 'product_id' => ['Unsupported product category.'],
             ]),

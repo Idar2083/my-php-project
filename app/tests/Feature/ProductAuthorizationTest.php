@@ -15,36 +15,6 @@ class ProductAuthorizationTest extends TestCase
 {
     use RefreshDatabase;
 
-    private function validProductData(): array
-    {
-        return [
-            'name' => 'Pepperoni',
-            'category' => 'Pizza',
-            'description' => 'Description',
-            'price' => 799,
-            'weight' => 0.55,
-        ];
-    }
-
-    private function createUser(): User
-    {
-        return User::factory()->create([
-            'role' => UserRole::USER,
-        ]);
-    }
-
-    private function createAdmin(): User
-    {
-        return User::factory()->create([
-            'role' => UserRole::ADMIN,
-        ]);
-    }
-
-    private function tokenFor(User $user): string
-    {
-        return JWTAuth::fromUser($user);
-    }
-
     public function test_guest_cannot_create_product(): void
     {
         $response = $this->postJson(
@@ -99,5 +69,35 @@ class ProductAuthorizationTest extends TestCase
         $this->assertDatabaseHas('products', [
             'name' => 'Pepperoni',
         ]);
+    }
+
+    private function validProductData(): array
+    {
+        return [
+            'name' => 'Pepperoni',
+            'category' => 'Pizza',
+            'description' => 'Description',
+            'price' => 799,
+            'weight' => 0.55,
+        ];
+    }
+
+    private function createUser(): User
+    {
+        return User::factory()->create([
+            'role' => UserRole::USER,
+        ]);
+    }
+
+    private function createAdmin(): User
+    {
+        return User::factory()->create([
+            'role' => UserRole::ADMIN,
+        ]);
+    }
+
+    private function tokenFor(User $user): string
+    {
+        return JWTAuth::fromUser($user);
     }
 }
