@@ -1,5 +1,16 @@
 services:
   php:
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB}
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      PRODUCTS_CACHE_TTL: ${PRODUCTS_CACHE_TTL}
     build:
       context: .
       dockerfile: docker/php/Dockerfile
@@ -63,6 +74,8 @@ services:
       - "127.0.0.1:${REDIS_PORT}:6379"
     command:
       - redis-server
+      - --appendonly
+      - "yes"
       - --requirepass
       - "${REDIS_PASSWORD}"
     healthcheck:

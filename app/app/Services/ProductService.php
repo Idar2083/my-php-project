@@ -30,7 +30,9 @@ class ProductService
          */
         $cached = Cache::remember(
             $cacheKey,
-            now()->addHour(),
+            now()->addSeconds(
+                (int) config('cache.products_ttl'),
+            ),
             static function () use ($page, $perPage): array {
                 $paginator = Product::query()
                     ->orderBy('id')
