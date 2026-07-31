@@ -8,16 +8,25 @@ use App\Http\Controllers\Models\Product;
 use App\Http\Requests\StoreProductRequest;
 use App\Http\Requests\UpdateProductRequest;
 use App\Http\Resources\ProductResource;
+use App\Services\ProductService;
+use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Symfony\Component\HttpFoundation\Response;
 
 class ProductController extends Controller
 {
-    public function index(): AnonymousResourceCollection
-    {
-        $products = Product::paginate(30);
+    public function __construct(
+        private ProductService $productService,
+    ) {
+    }
 
-        return ProductResource::collection($products);
+    public function index(Request $request): AnonymousResourceCollection
+    {
+        return ProductResource::collection(
+            $this->productService->paginate(
+                page: $request->integer('page', 1),
+            ),
+        );
     }
 
     public function store(StoreProductRequest $request): Response

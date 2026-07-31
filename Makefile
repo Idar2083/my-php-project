@@ -56,3 +56,6 @@ rector:
 
 rector-dr:
 	cd app && vendor/bin/rector process --dry-run
+
+tinker:
+	docker compose exec -e HOME=/tmp php php artisan tinker
