@@ -70,6 +70,7 @@ services:
     restart: unless-stopped
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
     ports:
       - "127.0.0.1:${REDIS_PORT}:6379"
     command:

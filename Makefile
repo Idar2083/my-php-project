@@ -59,3 +59,6 @@ rector-dr:
 
 tinker:
 	docker compose exec -e HOME=/tmp php php artisan tinker
+
+test:
+	docker compose exec php php artisan test
