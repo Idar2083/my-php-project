@@ -129,6 +129,6 @@ return [
 
     'serializable_classes' => false,
 
-    'products_ttl' => env('PRODUCTS_CACHE_TTL', 3600),
+    'products_ttl' => env('PRODUCTS_CACHE_TTL', 3_600),
 
 ];

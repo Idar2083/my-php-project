@@ -2,10 +2,9 @@
 
 declare(strict_types=1);
 
-use App\Http\Controllers\Models\User;
-use App\Services\CartService;
+use App\Modules\Auth\Domain\Models\User;
+use App\Modules\Cart\Application\Services\CartService;
 use Illuminate\Contracts\Console\Kernel;
-use Throwable;
 
 require dirname(__DIR__, 2) . '/vendor/autoload.php';
 

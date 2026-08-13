@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Enums\UserRole;
-use App\Http\Controllers\Models\Product;
-use App\Http\Controllers\Models\User;
+use App\Modules\Auth\Domain\Enums\UserRole;
+use App\Modules\Auth\Domain\Models\User;
+use App\Modules\Catalog\Domain\Models\Product;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;

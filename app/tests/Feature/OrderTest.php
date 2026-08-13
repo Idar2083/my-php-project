@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Http\Controllers\Models\Cart;
-use App\Http\Controllers\Models\CartItem;
-use App\Http\Controllers\Models\Product;
-use App\Http\Controllers\Models\User;
+use App\Modules\Auth\Domain\Models\User;
+use App\Modules\Cart\Domain\Models\Cart;
+use App\Modules\Cart\Domain\Models\CartItem;
+use App\Modules\Catalog\Domain\Models\Product;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;

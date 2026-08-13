@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-use App\Http\Controllers\AuthController;
-use App\Http\Controllers\CartController;
-use App\Http\Controllers\OrderController;
-use App\Http\Controllers\ProductController;
+use App\Modules\Auth\Presentation\Controllers\AuthController;
+use App\Modules\Cart\Presentation\Controllers\CartController;
+use App\Modules\Catalog\Presentation\Controllers\ProductController;
+use App\Modules\Order\Presentation\Controllers\OrderController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/products', [ProductController::class, 'index']);

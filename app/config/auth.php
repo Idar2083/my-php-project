@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use App\Http\Controllers\Models\User;
+use App\Modules\Auth\Domain\Models\User;
 
 return [
 
