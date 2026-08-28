@@ -9,6 +9,9 @@ variables:
 composer:
   stage: build
   image: composer:2
+  before_script:
+    - docker-php-ext-install sockets
+    - php -m | grep -q '^sockets$'
   script:
     - composer install --working-dir=app --no-interaction --prefer-dist --no-progress
   artifacts:
@@ -20,13 +23,14 @@ build:
   stage: build
   image: docker:latest
   script:
-    - docker build -f docker/php/Dockerfile -t pizza-backend .
+    - docker build -f docker/php/Dockerfile -t pizza-backend:latest .
 
 phpstan:
   stage: code-quality
   image: pizza-backend:latest
   needs:
     - composer
+    - build
   script:
     - app/vendor/bin/phpstan analyse app/app app/routes app/config app/database
 
@@ -35,6 +39,7 @@ php-cs-fixer:
   image: pizza-backend:latest
   needs:
     - composer
+    - build
   script:
     - app/vendor/bin/php-cs-fixer fix --dry-run --diff
 
@@ -43,6 +48,7 @@ rector:
   image: pizza-backend:latest
   needs:
     - composer
+    - build
   script:
     - app/vendor/bin/rector process --dry-run
 
@@ -72,4 +78,4 @@ tests:
     - export APP_KEY=$(php artisan key:generate --show)
     - php artisan jwt:secret --force
     - php artisan migrate --force
-    - php artisan test
+    - vendor/bin/phpunit
