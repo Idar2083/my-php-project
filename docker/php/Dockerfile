@@ -112,3 +112,21 @@ USER www-data
 ENTRYPOINT ["/usr/local/bin/entrypoint.prod.sh"]
 
 CMD ["php-fpm"]
+
+
+# === CI ===
+FROM base AS ci
+
+ENV APP_ENV=testing \
+    APP_DEBUG=1 \
+    COMPOSER_HOME=/tmp/composer
+
+COPY app/composer.json app/composer.lock ./
+
+RUN composer install \
+        --prefer-dist \
+        --no-progress \
+        --no-interaction \
+        --no-scripts
+
+COPY app .

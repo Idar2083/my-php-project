@@ -6,55 +6,34 @@ variables:
   DOCKER_HOST: unix:///var/run/docker.sock
   DOCKER_TLS_CERTDIR: ""
 
-composer:
-  stage: build
-  image: composer:2
-  before_script:
-    - docker-php-ext-install sockets
-    - php -m | grep -q '^sockets$'
-  script:
-    - composer install --working-dir=app --no-interaction --prefer-dist --no-progress
-  artifacts:
-    paths:
-      - app/vendor
-    expire_in: 1h
-
 build:
   stage: build
   image: docker:latest
   script:
-    - docker build -f docker/php/Dockerfile -t pizza-backend:latest .
+    - docker build --target ci -f docker/php/Dockerfile -t pizza-backend-ci:latest .
+    - docker build --target prod -f docker/php/Dockerfile -t pizza-backend:latest .
 
 phpstan:
   stage: code-quality
-  image: pizza-backend:latest
-  needs:
-    - composer
-    - build
+  image: pizza-backend-ci:latest
   script:
     - app/vendor/bin/phpstan analyse app/app app/routes app/config app/database
 
 php-cs-fixer:
   stage: code-quality
-  image: pizza-backend:latest
-  needs:
-    - composer
-    - build
+  image: pizza-backend-ci:latest
   script:
     - app/vendor/bin/php-cs-fixer fix --dry-run --diff
 
 rector:
   stage: code-quality
-  image: pizza-backend:latest
-  needs:
-    - composer
-    - build
+  image: pizza-backend-ci:latest
   script:
     - app/vendor/bin/rector process --dry-run
 
 tests:
   stage: code-quality
-  image: pizza-backend:latest
+  image: pizza-backend-ci:latest
   services:
     - name: postgres:15-alpine
       alias: postgres
@@ -70,12 +49,9 @@ tests:
     POSTGRES_DB: pizza_app_test
     POSTGRES_USER: postgres
     POSTGRES_PASSWORD: postgres
-  needs:
-    - composer
-    - build
   script:
     - cd app
     - export APP_KEY=$(php artisan key:generate --show)
     - php artisan jwt:secret --force
     - php artisan migrate --force
-    - vendor/bin/phpunit
+    - php artisan test
