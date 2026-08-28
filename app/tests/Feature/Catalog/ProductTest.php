@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tests\Feature;
+namespace Tests\Feature\Catalog;
 
 use App\Modules\Auth\Domain\Enums\UserRole;
 use App\Modules\Auth\Domain\Models\User;
@@ -12,11 +12,10 @@ use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
-class ProductTest extends TestCase
+final class ProductTest extends TestCase
 {
     use RefreshDatabase;
 
-    // create
     public function test_can_create_product(): void
     {
         $response = $this
@@ -28,13 +27,10 @@ class ProductTest extends TestCase
 
         $response->assertStatus(Response::HTTP_CREATED);
 
-        $this->assertDatabaseHas(
-            'products',
-            [
-                'name' => 'Pepperoni',
-                'category' => 'Pizza',
-            ],
-        );
+        $this->assertDatabaseHas('products', [
+            'name' => 'Pepperoni',
+            'category' => 'Pizza',
+        ]);
     }
 
     public function test_cannot_create_product_with_invalid_data(): void
@@ -51,7 +47,8 @@ class ProductTest extends TestCase
                 ],
             );
 
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
+        $response
+            ->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
             ->assertJsonValidationErrors([
                 'name',
                 'category',
@@ -60,66 +57,6 @@ class ProductTest extends TestCase
             ]);
     }
 
-    // read all
-    public function test_can_get_products(): void
-    {
-        $this->createProduct();
-
-        $response = $this->getJson('/api/products');
-
-        $response->assertStatus(Response::HTTP_OK)
-            ->assertJsonFragment([
-                'name' => 'Pepperoni',
-                'category' => 'Pizza',
-            ])
-            ->assertJsonStructure([
-                'data' => [
-                    '*' => [
-                        'id',
-                        'name',
-                        'category',
-                        'description',
-                        'price',
-                        'weight',
-                    ],
-                ],
-            ]);
-    }
-
-    public function test_returns_empty_products_list(): void
-    {
-        $response = $this->getJson('/api/products');
-
-        $response->assertStatus(Response::HTTP_OK)
-            ->assertJson([
-                'data' => [],
-            ]);
-    }
-
-    // read one
-    public function test_can_get_product_by_id(): void
-    {
-        $product = $this->createProduct();
-
-        $response = $this->getJson('/api/products/' . $product->id);
-
-        $response->assertStatus(Response::HTTP_OK)
-            ->assertJsonFragment([
-                'id' => $product->id,
-                'name' => $product->name,
-            ]);
-    }
-
-    public function test_returns_404_for_missing_product(): void
-    {
-        $missingProductId = 999;
-
-        $response = $this->getJson('/api/products/' . $missingProductId);
-
-        $response->assertStatus(Response::HTTP_NOT_FOUND);
-    }
-
-    // update
     public function test_can_update_product(): void
     {
         $product = $this->createProduct();
@@ -137,13 +74,10 @@ class ProductTest extends TestCase
 
         $response->assertStatus(Response::HTTP_OK);
 
-        $this->assertDatabaseHas(
-            'products',
-            [
-                'id' => $product->id,
-                'name' => 'Four Cheese',
-            ],
-        );
+        $this->assertDatabaseHas('products', [
+            'id' => $product->id,
+            'name' => 'Four Cheese',
+        ]);
     }
 
     public function test_cannot_update_product_with_invalid_data(): void
@@ -162,36 +96,41 @@ class ProductTest extends TestCase
         $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY);
     }
 
-    // delete
     public function test_can_delete_product(): void
     {
         $product = $this->createProduct();
 
         $response = $this
             ->withHeaders($this->authHeaders())
-            ->deleteJson('/api/products/' . $product->id);
+            ->deleteJson(
+                '/api/products/' . $product->id,
+            );
 
         $response->assertStatus(Response::HTTP_NO_CONTENT);
 
-        $this->assertDatabaseMissing(
-            'products',
-            [
-                'id' => $product->id,
-            ],
-        );
+        $this->assertDatabaseMissing('products', [
+            'id' => $product->id,
+        ]);
     }
 
     public function test_returns_404_when_deleting_missing_product(): void
     {
-        $missingProductId = 999;
-
         $response = $this
             ->withHeaders($this->authHeaders())
-            ->deleteJson('/api/products/' . $missingProductId);
+            ->deleteJson('/api/products/999');
 
         $response->assertStatus(Response::HTTP_NOT_FOUND);
     }
 
+    /**
+     * @return array{
+     *     name: string,
+     *     category: string,
+     *     description: string,
+     *     price: int,
+     *     weight: float
+     * }
+     */
     private function validProductData(): array
     {
         return [
@@ -205,7 +144,9 @@ class ProductTest extends TestCase
 
     private function createProduct(): Product
     {
-        return Product::create($this->validProductData());
+        return Product::query()->create(
+            $this->validProductData(),
+        );
     }
 
     private function createAdmin(): User
@@ -220,12 +161,15 @@ class ProductTest extends TestCase
         return JWTAuth::fromUser($user);
     }
 
+    /**
+     * @return array{Authorization: string}
+     */
     private function authHeaders(): array
     {
-        $admin = $this->createAdmin();
-
         return [
-            'Authorization' => 'Bearer ' . $this->tokenFor($admin),
+            'Authorization' => 'Bearer ' . $this->tokenFor(
+                $this->createAdmin(),
+            ),
         ];
     }
 }

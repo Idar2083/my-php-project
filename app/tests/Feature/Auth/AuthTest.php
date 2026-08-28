@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tests\Feature;
+namespace Tests\Feature\Auth;
 
 use App\Modules\Auth\Domain\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -10,7 +10,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
-class AuthTest extends TestCase
+final class AuthTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -65,6 +65,13 @@ class AuthTest extends TestCase
         $response->assertStatus(Response::HTTP_OK);
     }
 
+    /**
+     * @return array{
+     *     name: string,
+     *     email: string,
+     *     password: string
+     * }
+     */
     private function registerData(): array
     {
         return [
@@ -74,6 +81,9 @@ class AuthTest extends TestCase
         ];
     }
 
+    /**
+     * @param array<string, mixed> $attributes
+     */
     private function createUser(array $attributes = []): User
     {
         return User::factory()->create(
@@ -84,6 +94,12 @@ class AuthTest extends TestCase
         );
     }
 
+    /**
+     * @return array{
+     *     email: string,
+     *     password: string
+     * }
+     */
     private function loginCredentials(): array
     {
         return [

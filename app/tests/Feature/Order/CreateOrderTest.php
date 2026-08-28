@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tests\Feature;
+namespace Tests\Feature\Order;
 
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Domain\Models\Cart;
@@ -13,7 +13,7 @@ use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
-class OrderTest extends TestCase
+final class CreateOrderTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -113,58 +113,6 @@ class OrderTest extends TestCase
             ]);
 
         $this->assertDatabaseCount('orders', 0);
-    }
-
-    public function test_can_get_own_orders(): void
-    {
-        $this->addProductToCart();
-
-        $this->createOrder()
-            ->assertCreated();
-
-        $this->getJson('/api/orders')
-            ->assertOk()
-            ->assertJsonCount(1, 'data');
-    }
-
-    public function test_can_get_order_by_id(): void
-    {
-        $this->addProductToCart();
-
-        $orderId = $this->createOrder()
-            ->assertCreated()
-            ->json('data.id');
-
-        $this->getJson('/api/orders/' . $orderId)
-            ->assertOk()
-            ->assertJsonPath('data.id', $orderId);
-    }
-
-    public function test_cannot_get_another_users_order(): void
-    {
-        $this->addProductToCart();
-
-        $orderId = $this->createOrder()
-            ->assertCreated()
-            ->json('data.id');
-
-        $otherUser = User::factory()->create();
-
-        auth('api')->logout();
-
-        $this->withHeader(
-            'Authorization',
-            'Bearer ' . JWTAuth::fromUser($otherUser),
-        )->getJson('/api/orders/' . $orderId)
-            ->assertNotFound();
-    }
-
-    public function test_guest_cannot_access_orders(): void
-    {
-        $this->withHeader('Authorization', '');
-
-        $this->getJson('/api/orders')
-            ->assertUnauthorized();
     }
 
     protected function setUp(): void

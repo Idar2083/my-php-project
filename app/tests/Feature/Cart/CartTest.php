@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tests\Feature;
+namespace Tests\Feature\Cart;
 
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Domain\Models\CartItem;
@@ -11,7 +11,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
-class CartTest extends TestCase
+final class CartTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -99,85 +99,6 @@ class CartTest extends TestCase
         $this->assertDatabaseCount('cart_items', 0);
     }
 
-    public function test_cannot_add_nonexistent_product(): void
-    {
-        $this->auth()
-            ->postJson('/api/cart/items', [
-                'product_id' => 999,
-                'quantity' => 1,
-            ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('product_id');
-    }
-
-    public function test_cannot_exceed_pizza_limit(): void
-    {
-        $product = $this->createProduct();
-
-        $this->auth()
-            ->postJson('/api/cart/items', [
-                'product_id' => $product->id,
-                'quantity' => 11,
-            ])
-            ->assertUnprocessable();
-
-        $this->assertDatabaseCount('cart_items', 0);
-    }
-
-    public function test_cannot_exceed_drink_limit(): void
-    {
-        $product = $this->createProduct(
-            'Cola',
-            'drink',
-        );
-
-        $this->auth()
-            ->postJson('/api/cart/items', [
-                'product_id' => $product->id,
-                'quantity' => 21,
-            ])
-            ->assertUnprocessable();
-
-        $this->assertDatabaseCount('cart_items', 0);
-    }
-
-    public function test_cannot_exceed_pizza_limit_with_different_products(): void
-    {
-        $pepperoni = $this->createProduct(
-            'Pepperoni',
-            'pizza',
-        );
-
-        $margherita = $this->createProduct(
-            'Margherita',
-            'pizza',
-        );
-
-        $this->addProduct($pepperoni, 6);
-
-        $this->auth()
-            ->postJson('/api/cart/items', [
-                'product_id' => $margherita->id,
-                'quantity' => 5,
-            ])
-            ->assertUnprocessable();
-
-        $this->assertDatabaseHas('cart_items', [
-            'product_id' => $pepperoni->id,
-            'quantity' => 6,
-        ]);
-
-        $this->assertDatabaseMissing('cart_items', [
-            'product_id' => $margherita->id,
-        ]);
-    }
-
-    public function test_guest_cannot_access_cart(): void
-    {
-        $this->getJson('/api/cart')
-            ->assertUnauthorized();
-    }
-
     public function test_can_update_pizza_quantity_to_limit(): void
     {
         $item = $this->addProduct(
@@ -194,26 +115,6 @@ class CartTest extends TestCase
         $this->assertDatabaseHas('cart_items', [
             'id' => $item->id,
             'quantity' => 10,
-        ]);
-    }
-
-    public function test_cannot_update_pizza_quantity_over_limit(): void
-    {
-        $item = $this->addProduct(
-            $this->createProduct(),
-            2,
-        );
-
-        $this->auth()
-            ->putJson('/api/cart/items/' . $item->id, [
-                'quantity' => 11,
-            ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('quantity');
-
-        $this->assertDatabaseHas('cart_items', [
-            'id' => $item->id,
-            'quantity' => 2,
         ]);
     }
 
@@ -236,29 +137,6 @@ class CartTest extends TestCase
         $this->assertDatabaseHas('cart_items', [
             'id' => $item->id,
             'quantity' => 20,
-        ]);
-    }
-
-    public function test_cannot_update_drink_quantity_over_limit(): void
-    {
-        $item = $this->addProduct(
-            $this->createProduct(
-                'Cola',
-                'drink',
-            ),
-            2,
-        );
-
-        $this->auth()
-            ->putJson('/api/cart/items/' . $item->id, [
-                'quantity' => 21,
-            ])
-            ->assertUnprocessable()
-            ->assertJsonValidationErrors('quantity');
-
-        $this->assertDatabaseHas('cart_items', [
-            'id' => $item->id,
-            'quantity' => 2,
         ]);
     }
 
@@ -290,8 +168,10 @@ class CartTest extends TestCase
         ]);
     }
 
-    private function addProduct(Product $product, int $quantity = 1): CartItem
-    {
+    private function addProduct(
+        Product $product,
+        int $quantity = 1,
+    ): CartItem {
         $this->auth()
             ->postJson('/api/cart/items', [
                 'product_id' => $product->id,
