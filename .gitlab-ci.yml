@@ -17,26 +17,28 @@ phpstan:
   stage: code-quality
   image: pizza-backend-ci:latest
   script:
-    - app/vendor/bin/phpstan analyse app/app app/routes app/config app/database
+    - cd /var/www/app
+    - ./vendor/bin/phpstan analyse app routes config database
 
 php-cs-fixer:
   stage: code-quality
   image: pizza-backend-ci:latest
   script:
-    - app/vendor/bin/php-cs-fixer fix --dry-run --diff
+    - cd /var/www/app
+    - ./vendor/bin/php-cs-fixer fix --dry-run --diff
 
 rector:
   stage: code-quality
   image: pizza-backend-ci:latest
   script:
-    - app/vendor/bin/rector process --dry-run
+    - cd /var/www/app
+    - ./vendor/bin/rector process --dry-run
 
 tests:
   stage: code-quality
   image: pizza-backend-ci:latest
   services:
-    - name: postgres:15-alpine
-      alias: postgres
+    - postgres:15-alpine
   variables:
     FF_NETWORK_PER_BUILD: "true"
     APP_ENV: testing
@@ -50,7 +52,7 @@ tests:
     POSTGRES_USER: postgres
     POSTGRES_PASSWORD: postgres
   script:
-    - cd app
+    - cd /var/www/app
     - export APP_KEY=$(php artisan key:generate --show)
     - php artisan jwt:secret --force
     - php artisan migrate --force

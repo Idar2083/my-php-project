@@ -9,15 +9,17 @@ use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Auth\Presentation\Requests\LoginRequest;
 use App\Modules\Auth\Presentation\Requests\RegisterRequest;
 use Symfony\Component\HttpFoundation\Response;
-use Tymon\JWTAuth\Facades\JWTAuth;
 
-class AuthController extends Controller
+final class AuthController extends Controller
 {
     public function register(RegisterRequest $request): Response
     {
         $user = User::create($request->validated());
 
-        $token = JWTAuth::fromUser($user);
+        /** @var \Tymon\JWTAuth\JWTAuth $jwtAuth */
+        $jwtAuth = app('tymon.jwt.auth');
+
+        $token = $jwtAuth->fromUser($user);
 
         return response()->json([
             'token' => $token,

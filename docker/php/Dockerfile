@@ -123,10 +123,11 @@ ENV APP_ENV=testing \
 
 COPY app/composer.json app/composer.lock ./
 
-RUN composer install \
+RUN mkdir -p /tmp/composer \
+ && composer install \
         --prefer-dist \
         --no-progress \
         --no-interaction \
         --no-scripts
 
-COPY app .
+COPY app ./
