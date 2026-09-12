@@ -10,6 +10,8 @@ build:
   stage: build
   image: docker:latest
   script:
+    - docker run --rm php:8.4-fpm php -r 'echo gethostbyname("pecl.php.net"), PHP_EOL;'
+    - docker run --rm php:8.4-fpm php -r '$f=fopen("https://pecl.php.net/channel.xml","r"); var_dump($f !== false);'
     - docker build --target ci -f docker/php/Dockerfile -t pizza-backend-ci:latest .
     - docker build --target prod -f docker/php/Dockerfile -t pizza-backend:latest .
 
