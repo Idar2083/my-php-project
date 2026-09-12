@@ -6,9 +6,10 @@ namespace App\Modules\Order\Presentation\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Auth\Domain\Models\User;
-use App\Modules\Order\Application\DTO\AddressDto;
 use App\Modules\Order\Application\Services\OrderService;
+use App\Modules\Order\Domain\Models\DTO\AddressDto;
 use App\Modules\Order\Presentation\Requests\StoreOrderRequest;
+use App\Modules\Order\Presentation\Requests\UpdateOrderStatusRequest;
 use App\Modules\Order\Presentation\Resources\OrderResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -63,6 +64,18 @@ class OrderController extends Controller
 
         return new OrderResource(
             $this->orderService->getOrder($user, $orderId),
+        );
+    }
+
+    public function updateStatus(
+        UpdateOrderStatusRequest $request,
+        int $orderId,
+    ): OrderResource {
+        return new OrderResource(
+            $this->orderService->updateStatus(
+                orderId: $orderId,
+                status: $request->getStatus(),
+            ),
         );
     }
 }

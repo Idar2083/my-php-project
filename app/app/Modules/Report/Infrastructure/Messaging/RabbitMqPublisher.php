@@ -5,32 +5,15 @@ declare(strict_types=1);
 namespace App\Modules\Report\Infrastructure\Messaging;
 
 use App\Modules\Report\Application\Contracts\ReportCompletionPublisher;
-use App\Modules\Report\Application\Contracts\ReportGenerationPublisher;
 use App\Modules\Report\Application\DTO\ReportCompletedMessage;
-use App\Modules\Report\Application\DTO\ReportGenerationMessage;
 use PhpAmqpLib\Message\AMQPMessage;
 
-final class RabbitMqPublisher implements
-    ReportGenerationPublisher,
-    ReportCompletionPublisher
+final class RabbitMqPublisher implements ReportCompletionPublisher
 {
     public function __construct(
         private readonly RabbitMqConnection $connection,
         private readonly RabbitMqTopology $topology,
     ) {
-    }
-
-    public function publishGeneration(
-        ReportGenerationMessage $message,
-    ): void {
-        $this->publish(
-            body: $message->toArray(),
-            routingKey: (string) config(
-                'rabbitmq.reports.generate.routing_key',
-            ),
-            messageId: $message->messageId,
-            messageType: 'reports.generate',
-        );
     }
 
     public function publishCompleted(
@@ -43,54 +26,29 @@ final class RabbitMqPublisher implements
             ),
             messageId: $message->messageId,
             messageType: 'reports.completed',
-        );
-    }
-
-    public function publishRetry(
-        ReportGenerationMessage $message,
-    ): void {
-        $this->publish(
-            body: $message->nextAttempt()->toArray(),
-            routingKey: (string) config(
-                'rabbitmq.reports.retry.routing_key',
+            declareTopology: fn (\PhpAmqpLib\Channel\AMQPChannel $channel) => $this->topology->declareCompleted(
+                $channel,
             ),
-            messageId: $message->messageId,
-            messageType: 'reports.generate.retry',
         );
     }
 
     /**
      * @param array<string, mixed> $body
-     */
-    public function publishDlq(
-        array $body,
-        string $messageId,
-    ): void {
-        $this->publish(
-            body: $body,
-            routingKey: (string) config(
-                'rabbitmq.reports.dlq.routing_key',
-            ),
-            messageId: $messageId,
-            messageType: 'reports.generate.dlq',
-        );
-    }
-
-    /**
-     * @param array<string, mixed> $body
+     * @param callable(\PhpAmqpLib\Channel\AMQPChannel): void $declareTopology
      */
     private function publish(
         array $body,
         string $routingKey,
         string $messageId,
         string $messageType,
+        callable $declareTopology,
     ): void {
         $connection = $this->connection->connect();
 
         try {
             $channel = $connection->channel();
 
-            $this->topology->declare($channel);
+            $declareTopology($channel);
 
             $channel->confirm_select();
 
@@ -120,10 +78,14 @@ final class RabbitMqPublisher implements
 
             $channel->wait_for_pending_acks_returns();
         } catch (\Throwable $exception) {
-            throw new \RuntimeException(sprintf(
-                'Unable to publish RabbitMQ message with routing key "%s".',
-                $routingKey,
-            ), $exception->getCode(), previous: $exception);
+            throw new \RuntimeException(
+                sprintf(
+                    'Unable to publish RabbitMQ message with routing key "%s".',
+                    $routingKey,
+                ),
+                $exception->getCode(),
+                previous: $exception,
+            );
         } finally {
             if ($connection->isConnected()) {
                 $connection->close();

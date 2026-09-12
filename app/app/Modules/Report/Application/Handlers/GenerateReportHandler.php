@@ -6,7 +6,6 @@ namespace App\Modules\Report\Application\Handlers;
 
 use App\Modules\Report\Application\Contracts\ReportCompletionPublisher;
 use App\Modules\Report\Application\DTO\ReportCompletedMessage;
-use App\Modules\Report\Application\DTO\ReportGenerationMessage;
 use App\Modules\Report\Application\Services\ReportGenerationService;
 use App\Modules\Report\Domain\Enums\ReportStatus;
 use App\Modules\Report\Domain\Models\Report;
@@ -19,22 +18,24 @@ final readonly class GenerateReportHandler
     ) {
     }
 
-    public function handle(ReportGenerationMessage $message): void
-    {
-        $report = Report::query()->find($message->reportId);
+    public function handle(
+        int $reportId,
+        string $messageId,
+    ): void {
+        $report = Report::query()->find($reportId);
 
         if ($report === null) {
             throw new \RuntimeException(
                 sprintf(
                     'Report with ID %d was not found.',
-                    $message->reportId,
+                    $reportId,
                 ),
             );
         }
 
         if ($report->status === ReportStatus::COMPLETED) {
             $this->publishCompleted(
-                message: $message,
+                messageId: $messageId,
                 report: $report,
             );
 
@@ -42,19 +43,46 @@ final readonly class GenerateReportHandler
         }
 
         if ($report->status === ReportStatus::FAILED) {
+            return;
+        }
+
+        if (!$this->startProcessing($report)) {
+            $report->refresh();
+
+            if ($report->status === ReportStatus::PROCESSING) {
+                return;
+            }
+
+            if ($report->status === ReportStatus::COMPLETED) {
+                $this->publishCompleted(
+                    messageId: $messageId,
+                    report: $report,
+                );
+
+                return;
+            }
+
+            if ($report->status === ReportStatus::FAILED) {
+                return;
+            }
+
             throw new \RuntimeException(
                 sprintf(
-                    'Report %d has already failed.',
+                    'Report %d is in invalid status: %s.',
                     $report->id,
+                    $report->status->value,
                 ),
             );
         }
 
-        $this->startProcessing($report);
+        /*
+         * startProcessing() updates the database directly, so the
+         * in-memory model still contains the old PENDING status.
+         * Reload it before passing it to the generation service.
+         */
+        $report->refresh();
 
         $this->generationService->generate($report);
-
-        $report->refresh();
 
         if (
             $report->status !== ReportStatus::COMPLETED
@@ -69,12 +97,12 @@ final readonly class GenerateReportHandler
         }
 
         $this->publishCompleted(
-            message: $message,
+            messageId: $messageId,
             report: $report,
         );
     }
 
-    private function startProcessing(Report $report): void
+    private function startProcessing(Report $report): bool
     {
         $started = Report::query()
             ->whereKey($report->id)
@@ -87,20 +115,11 @@ final readonly class GenerateReportHandler
                 'error' => null,
             ]);
 
-        if ($started === 0) {
-            throw new \RuntimeException(
-                sprintf(
-                    'Report %d is already being processed.',
-                    $report->id,
-                ),
-            );
-        }
-
-        $report->refresh();
+        return $started === 1;
     }
 
     private function publishCompleted(
-        ReportGenerationMessage $message,
+        string $messageId,
         Report $report,
     ): void {
         if ($report->file_path === null) {
@@ -114,7 +133,7 @@ final readonly class GenerateReportHandler
 
         $this->publisher->publishCompleted(
             new ReportCompletedMessage(
-                messageId: $message->messageId . ':completed',
+                messageId: $messageId . ':completed',
                 reportId: $report->id,
                 filePath: $report->file_path,
                 createdAt: new \DateTimeImmutable(),

@@ -9,6 +9,7 @@ use App\Modules\Cart\Domain\Models\Cart;
 use App\Modules\Cart\Domain\Models\CartItem;
 use App\Modules\Catalog\Domain\Models\Product;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
@@ -89,27 +90,28 @@ final class GetOrderTest extends TestCase
         string $name = 'Pepperoni',
         int $quantity = 2,
         int $price = 500,
-    ): void {
-        $product = Product::query()->create([
+    ): Product {
+        $product = Product::factory()->create([
             'name' => $name,
-            'category' => 'pizza',
-            'description' => 'Test product',
             'price' => $price,
-            'weight' => 0.55,
         ]);
 
-        $cart = Cart::query()->firstOrCreate([
-            'user_id' => $this->user->id,
-        ]);
+        Cart::factory()
+            ->for($this->user, 'user')
+            ->has(
+                CartItem::factory()
+                    ->for($product, 'product')
+                    ->state([
+                        'quantity' => $quantity,
+                    ]),
+                'items',
+            )
+            ->create();
 
-        CartItem::query()->create([
-            'cart_id' => $cart->id,
-            'product_id' => $product->id,
-            'quantity' => $quantity,
-        ]);
+        return $product;
     }
 
-    private function createOrder()
+    private function createOrder(): TestResponse
     {
         return $this->postJson(
             '/api/orders',

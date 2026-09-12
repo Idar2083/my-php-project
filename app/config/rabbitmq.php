@@ -45,21 +45,6 @@ return [
             ),
         ],
 
-        'retry' => [
-            'queue' => env(
-                'RABBITMQ_REPORTS_RETRY_QUEUE',
-                'reports.generate.retry',
-            ),
-            'routing_key' => env(
-                'RABBITMQ_REPORTS_RETRY_ROUTING_KEY',
-                'reports.generate.retry',
-            ),
-            'delay' => (int) env(
-                'RABBITMQ_REPORTS_RETRY_DELAY',
-                5_000,
-            ),
-        ],
-
         'dlq' => [
             'queue' => env(
                 'RABBITMQ_REPORTS_DLQ_QUEUE',
@@ -84,8 +69,4 @@ return [
             ),
         ],
     ],
-
-    'prefetch' => (int) env('RABBITMQ_PREFETCH', 1),
-
-    'max_retries' => (int) env('RABBITMQ_REPORTS_MAX_RETRIES', 3),
 ];

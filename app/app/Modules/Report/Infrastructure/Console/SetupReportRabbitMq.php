@@ -10,40 +10,28 @@ use Illuminate\Console\Command;
 
 final class SetupReportRabbitMq extends Command
 {
-    protected $signature = 'reports:rabbitmq-setup';
+    protected $signature = 'reports:rabbitmq:setup';
 
-    protected $description = 'Declare RabbitMQ topology required for reports';
+    protected $description = 'Declare RabbitMQ topology for report generation';
 
     public function handle(
         RabbitMqConnection $connection,
         RabbitMqTopology $topology,
     ): int {
-        $rabbitMq = null;
-        $channel = null;
+        $rabbitMqConnection = $connection->connect();
 
         try {
-            $rabbitMq = $connection->connect();
-            $channel = $rabbitMq->channel();
+            $channel = $rabbitMqConnection->channel();
 
-            $topology->declare($channel);
-
-            $this->info('Report RabbitMQ topology declared.');
-
-            return self::SUCCESS;
-        } catch (\Throwable $exception) {
-            $this->error($exception->getMessage());
-
-            report($exception);
-
-            return self::FAILURE;
+            $topology->declareGenerate($channel);
         } finally {
-            if ($channel !== null && $channel->is_open()) {
-                $channel->close();
-            }
-
-            if ($rabbitMq instanceof \PhpAmqpLib\Connection\AMQPStreamConnection && $rabbitMq->isConnected()) {
-                $rabbitMq->close();
+            if ($rabbitMqConnection->isConnected()) {
+                $rabbitMqConnection->close();
             }
         }
+
+        $this->info('RabbitMQ report generation topology is ready.');
+
+        return self::SUCCESS;
     }
 }

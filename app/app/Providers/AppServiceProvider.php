@@ -7,7 +7,6 @@ namespace App\Providers;
 use App\Modules\Catalog\Domain\Models\Product;
 use App\Modules\Catalog\Presentation\Observers\ProductObserver;
 use App\Modules\Report\Application\Contracts\ReportCompletionPublisher;
-use App\Modules\Report\Application\Contracts\ReportGenerationPublisher;
 use App\Modules\Report\Application\Contracts\ReportOrderItemReader;
 use App\Modules\Report\Application\Contracts\ReportStorage;
 use App\Modules\Report\Infrastructure\Messaging\RabbitMqPublisher;
@@ -34,11 +33,6 @@ class AppServiceProvider extends ServiceProvider
 
         $this->app->bind(
             ReportCompletionPublisher::class,
-            RabbitMqPublisher::class,
-        );
-
-        $this->app->bind(
-            ReportGenerationPublisher::class,
             RabbitMqPublisher::class,
         );
     }

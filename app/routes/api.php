@@ -16,15 +16,19 @@ Route::get('/products/{id}', [ProductController::class, 'show']);
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
-Route::get('/reports/{id}/download', [ReportController::class, 'download']);
-Route::get('/reports/{id}', [ReportController::class, 'show']);
-Route::post('/reports', [ReportController::class, 'store']);
-
 # Admin routes
 Route::middleware(['auth:api', 'admin'])->group(function (): void {
     Route::post('/products', [ProductController::class, 'store']);
     Route::put('/products/{id}', [ProductController::class, 'update']);
     Route::delete('/products/{id}', [ProductController::class, 'destroy']);
+
+    Route::prefix('reports')->group(static function (): void {
+        Route::post('/', [ReportController::class, 'store']);
+        Route::get('/{report}', [ReportController::class, 'show']);
+        Route::get('/{report}/download', [ReportController::class, 'download']);
+    });
+
+    Route::put('/orders/{orderId}/status', [OrderController::class, 'updateStatus']);
 });
 
 # Authenticated routes

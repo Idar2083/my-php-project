@@ -44,6 +44,7 @@ final class CreateOrderTest extends TestCase
 
         $this->assertDatabaseHas('order_items', [
             'product_id' => $product->id,
+            'product_name' => 'Pepperoni',
             'quantity' => 2,
             'price' => 500,
         ]);
@@ -87,9 +88,9 @@ final class CreateOrderTest extends TestCase
 
     public function test_cannot_create_order_with_empty_cart(): void
     {
-        Cart::query()->create([
-            'user_id' => $this->user->id,
-        ]);
+        Cart::factory()
+            ->for($this->user)
+            ->create();
 
         $this->createOrder()
             ->assertUnprocessable()
@@ -149,23 +150,21 @@ final class CreateOrderTest extends TestCase
         int $quantity = 2,
         int $price = 500,
     ): Product {
-        $product = Product::query()->create([
+        $product = Product::factory()->create([
             'name' => $name,
-            'category' => 'pizza',
-            'description' => 'Test product',
             'price' => $price,
-            'weight' => 0.55,
         ]);
 
         $cart = Cart::query()->firstOrCreate([
             'user_id' => $this->user->id,
         ]);
 
-        CartItem::query()->create([
-            'cart_id' => $cart->id,
-            'product_id' => $product->id,
-            'quantity' => $quantity,
-        ]);
+        CartItem::factory()
+            ->for($cart)
+            ->for($product)
+            ->create([
+                'quantity' => $quantity,
+            ]);
 
         return $product;
     }

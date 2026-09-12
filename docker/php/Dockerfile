@@ -19,6 +19,11 @@ RUN apt-get update \
     librabbitmq-dev \
  && rm -rf /var/lib/apt/lists/*
 
+# PHP extension installer
+COPY --from=mlocati/php-extension-installer:2.11.12 \
+    /usr/bin/install-php-extensions \
+    /usr/local/bin/
+
 # PHP extensions
 RUN docker-php-ext-install \
         intl \
@@ -28,16 +33,9 @@ RUN docker-php-ext-install \
         sockets
 
 # PECL extensions
-COPY docker/php/extensions/redis-6.3.0.tgz /tmp/redis-6.3.0.tgz
-COPY docker/php/extensions/amqp-2.2.0.tgz /tmp/amqp-2.2.0.tgz
-
-RUN pecl install /tmp/redis-6.3.0.tgz \
- && pecl install /tmp/amqp-2.2.0.tgz \
- && echo "extension=redis.so" > /usr/local/etc/php/conf.d/redis.ini \
- && echo "extension=amqp.so" > /usr/local/etc/php/conf.d/amqp.ini \
- && rm -f \
-        /tmp/redis-6.3.0.tgz \
-        /tmp/amqp-2.2.0.tgz
+RUN install-php-extensions \
+        redis-6.3.0 \
+        amqp-2.2.0
 
 # Copy Composer binary from official image
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -59,11 +57,7 @@ ARG HOST_UID=1000
 ARG HOST_GID=1000
 
 # Xdebug only for dev
-COPY docker/php/extensions/xdebug-3.5.3.tgz /tmp/xdebug-3.5.3.tgz
-
-RUN pecl install /tmp/xdebug-3.5.3.tgz \
- && docker-php-ext-enable xdebug \
- && rm -f /tmp/xdebug-3.5.3.tgz
+RUN install-php-extensions xdebug-3.5.3
 
 COPY docker/php/conf/xdebug.ini /usr/local/etc/php/conf.d/xdebug.ini
 
@@ -81,7 +75,7 @@ CMD ["php-fpm"]
 # === BUILD ===
 FROM base AS build
 
-ENV APP_ENV=prod APP_DEBUG=0
+ENV APP_ENV=prod APP_DEBUG=0 COMPOSER_HOME=/tmp/composer
 
 COPY app/composer.json app/composer.lock ./
 RUN composer install --no-dev --prefer-dist --no-progress --no-interaction --no-scripts
@@ -102,10 +96,14 @@ COPY --from=build /var/www/app /var/www/app
 COPY docker/php/entrypoint.prod.sh /usr/local/bin/entrypoint.prod.sh
 COPY docker/php/entrypoint.worker.sh /usr/local/bin/entrypoint.worker.sh
 
-RUN chmod +x \
-        /usr/local/bin/entrypoint.prod.sh \
-        /usr/local/bin/entrypoint.worker.sh \
- && chown -R www-data:www-data /var/www/app
+RUN chmod +x /usr/local/bin/entrypoint.prod.sh /usr/local/bin/entrypoint.worker.sh \
+    && mkdir -p \
+        /var/www/app/storage/framework/cache \
+        /var/www/app/storage/framework/sessions \
+        /var/www/app/storage/framework/views \
+        /var/www/app/storage/logs \
+        /var/www/app/bootstrap/cache \
+    && chown -R www-data:www-data /var/www/app
 
 USER www-data
 

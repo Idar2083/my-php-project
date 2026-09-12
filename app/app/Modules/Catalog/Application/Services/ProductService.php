@@ -64,7 +64,14 @@ class ProductService
 
     public function bumpCacheVersion(): void
     {
-        Cache::increment(self::CACHE_VERSION_KEY);
+        Cache::add(
+            self::CACHE_VERSION_KEY,
+            0,
+        );
+
+        Cache::increment(
+            self::CACHE_VERSION_KEY,
+        );
     }
 
     private function buildCacheKey(int $page): string

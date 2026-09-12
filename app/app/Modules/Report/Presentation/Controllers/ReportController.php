@@ -6,6 +6,7 @@ namespace App\Modules\Report\Presentation\Controllers;
 
 use App\Modules\Report\Application\Contracts\ReportStorage;
 use App\Modules\Report\Application\Handlers\CreateReportHandler;
+use App\Modules\Report\Domain\Enums\ReportStatus;
 use App\Modules\Report\Domain\Models\Report;
 use App\Modules\Report\Presentation\Requests\CreateReportRequest;
 use Illuminate\Http\JsonResponse;
@@ -18,10 +19,21 @@ final class ReportController
         CreateReportRequest $request,
         CreateReportHandler $handler,
     ): JsonResponse {
-        $report = $handler->handle(
-            dateFrom: $request->string('date_from')->toString(),
-            dateTo: $request->string('date_to')->toString(),
-        );
+        try {
+            $report = $handler->handle(
+                dateFrom: $request->normalizedDateFrom(),
+                dateTo: $request->normalizedDateTo(),
+            );
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return response()->json(
+                [
+                    'message' => 'Report generation is temporarily unavailable.',
+                ],
+                Response::HTTP_SERVICE_UNAVAILABLE,
+            );
+        }
 
         return response()->json(
             [
@@ -34,10 +46,8 @@ final class ReportController
         );
     }
 
-    public function show(int $id): JsonResponse
+    public function show(Report $report): JsonResponse
     {
-        $report = Report::query()->findOrFail($id);
-
         return response()->json([
             'id' => $report->id,
             'status' => $report->status->value,
@@ -49,39 +59,35 @@ final class ReportController
     }
 
     public function download(
-        int $id,
+        Report $report,
         ReportStorage $storage,
     ): StreamedResponse {
-        $report = Report::query()->findOrFail($id);
-
         if (
-            $report->file_path === null
-            || !$storage->exists($report->file_path)
+            $report->status !== ReportStatus::COMPLETED
+            || $report->file_path === null
         ) {
-            abort(Response::HTTP_NOT_FOUND);
+            abort(
+                Response::HTTP_NOT_FOUND,
+                'Report file is not available.',
+            );
         }
 
-        $stream = $storage->readStream($report->file_path);
+        if (!$storage->exists($report->file_path)) {
+            abort(
+                Response::HTTP_NOT_FOUND,
+                'File missing in storage.',
+            );
+        }
+
+        $filePath = $report->file_path;
 
         return response()->streamDownload(
-            static function () use ($stream): void {
-                $output = fopen('php://output', 'wb');
-
-                if ($output === false) {
-                    fclose($stream);
-
-                    throw new \RuntimeException(
-                        'Unable to open output stream.',
-                    );
-                }
+            static function () use ($storage, $filePath): void {
+                $stream = $storage->readStream($filePath);
 
                 try {
-                    stream_copy_to_stream(
-                        $stream,
-                        $output,
-                    );
+                    fpassthru($stream);
                 } finally {
-                    fclose($output);
                     fclose($stream);
                 }
             },

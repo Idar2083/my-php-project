@@ -8,25 +8,42 @@
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
+
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
     </testsuites>
+
     <source>
         <include>
             <directory>app</directory>
         </include>
     </source>
+
     <php>
-        <env name="APP_ENV" value="testing"/>
-        <env name="APP_KEY" value="base64:ZUdWtKOLLVdKCntDCXQ5XkxvUiXzpt5EPz4I5MpIGaU="/>
+        <env name="APP_ENV" value="testing" force="true"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
-        <env name="DB_URL" value=""/>
+
+        <env name="DB_CONNECTION" value="pgsql" force="true"/>
+        <env name="DB_HOST" value="postgres" force="true"/>
+        <env name="DB_PORT" value="5432" force="true"/>
+        <env name="DB_DATABASE" value="pizza_app_test" force="true"/>
+        <env name="DB_USERNAME" value="pizza_db_user" force="true"/>
+
         <env name="MAIL_MAILER" value="array"/>
-        <env name="QUEUE_CONNECTION" value="sync"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>
+
+        <env name="AWS_ACCESS_KEY_ID" value="pizza_minio" force="true"/>
+        <env name="AWS_DEFAULT_REGION" value="us-east-1" force="true"/>
+        <env name="AWS_BUCKET" value="reports" force="true"/>
+        <env name="AWS_ENDPOINT" value="http://minio:9000" force="true"/>
+        <env name="AWS_USE_PATH_STYLE_ENDPOINT" value="true" force="true"/>
     </php>
 </phpunit>

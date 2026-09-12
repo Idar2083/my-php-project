@@ -2,6 +2,6 @@
 
 set -e
 
-php artisan reports:rabbitmq-setup
+php artisan reports:rabbitmq:setup
 
-exec php artisan reports:rabbitmq-consume
+exec php artisan queue:work rabbitmq

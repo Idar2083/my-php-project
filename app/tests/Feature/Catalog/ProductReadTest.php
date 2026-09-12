@@ -76,7 +76,7 @@ final class ProductReadTest extends TestCase
 
     private function createProduct(): Product
     {
-        return Product::query()->create([
+        return Product::factory()->create([
             'name' => 'Pepperoni',
             'category' => 'Pizza',
             'description' => '...',

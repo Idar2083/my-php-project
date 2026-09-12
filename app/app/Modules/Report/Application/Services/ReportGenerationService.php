@@ -40,6 +40,8 @@ final readonly class ReportGenerationService
             );
         }
 
+        $stream = null;
+
         try {
             $rows = $this->orderItemReader->between(
                 dateFrom: $report->date_from,
@@ -67,26 +69,27 @@ final readonly class ReportGenerationService
                 );
             }
 
-            try {
-                $this->storage->put(
-                    path: $storagePath,
-                    stream: $stream,
-                );
-            } finally {
+            $this->storage->put(
+                path: $storagePath,
+                stream: $stream,
+            );
+
+            $report->status = ReportStatus::COMPLETED;
+            $report->file_path = $storagePath;
+            $report->error = null;
+            $report->save();
+        } catch (\Throwable $exception) {
+            $report->status = ReportStatus::FAILED;
+            $report->error = $exception->getMessage();
+            $report->save();
+
+            throw $exception;
+        } finally {
+            if (is_resource($stream)) {
                 fclose($stream);
             }
 
-            $report->update([
-                'status' => ReportStatus::COMPLETED,
-                'file_path' => $storagePath,
-                'error' => null,
-            ]);
-        } catch (\Throwable $exception) {
-            throw $exception;
-        } finally {
-            if (
-                is_file($temporaryPath)
-            ) {
+            if (is_file($temporaryPath)) {
                 unlink($temporaryPath);
             }
         }

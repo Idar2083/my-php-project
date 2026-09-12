@@ -4,154 +4,148 @@ declare(strict_types=1);
 
 namespace Tests\Feature\Report;
 
-use App\Modules\Report\Application\Contracts\ReportGenerationPublisher;
+use App\Modules\Auth\Domain\Models\User;
+use App\Modules\Report\Application\Jobs\GenerateReportJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Symfony\Component\HttpFoundation\Response;
 use Tests\TestCase;
+use Tymon\JWTAuth\Facades\JWTAuth;
 
 final class CreateReportTest extends TestCase
 {
     use RefreshDatabase;
 
+    private User $admin;
+
     public function test_can_create_report(): void
     {
-        $publisher = $this->mock(ReportGenerationPublisher::class);
-
-        $publisher
-            ->shouldReceive('publishGeneration')
-            ->once()
-            ->with(
-                \Mockery::on(
-                    static function ($message): bool {
-                        return $message->reportId > 0
-                            && $message->attempt === 1
-                            && $message->dateFrom->format('Y-m-d H:i:s')
-                            === '2026-08-01 00:00:00'
-                            && $message->dateTo->format('Y-m-d H:i:s')
-                            === '2026-08-24 23:59:59';
-                    },
-                ),
-            );
+        Queue::fake();
 
         $response = $this->postJson(
             '/api/reports',
             $this->validReportData(),
         );
 
-        $response->assertStatus(
-            Response::HTTP_ACCEPTED,
-        )->assertJson([
-            'status' => 'pending',
-            'date_from' => '2026-08-01T00:00:00.000000Z',
-            'date_to' => '2026-08-24T23:59:59.000000Z',
-        ])->assertJsonStructure([
-            'id',
-            'status',
-            'date_from',
-            'date_to',
-        ]);
+        $response
+            ->assertStatus(Response::HTTP_ACCEPTED)
+            ->assertJson([
+                'status' => 'pending',
+                'date_from' => '2026-08-01T00:00:00.000000Z',
+                'date_to' => '2026-08-24T00:00:00.000000Z',
+            ])
+            ->assertJsonStructure([
+                'id',
+                'status',
+                'date_from',
+                'date_to',
+            ]);
+
+        $reportId = $response->json('id');
 
         $this->assertDatabaseHas(
             'reports',
             [
-                'id' => $response->json('id'),
+                'id' => $reportId,
                 'status' => 'pending',
                 'file_path' => null,
                 'error' => null,
             ],
         );
+
+        Queue::assertPushed(
+            GenerateReportJob::class,
+            1,
+        );
     }
 
     public function test_cannot_create_report_without_date_from(): void
     {
+        Queue::fake();
+
         $response = $this->postJson(
             '/api/reports',
             [
-                'date_to' => '2026-08-24 23:59:59',
+                'date_to' => '2026-08-24',
             ],
         );
 
-        $response->assertStatus(
-            Response::HTTP_UNPROCESSABLE_ENTITY,
-        )->assertJsonValidationErrors([
-            'date_from',
-        ]);
+        $response
+            ->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
+            ->assertJsonValidationErrors([
+                'date_from',
+            ]);
 
         $this->assertDatabaseCount(
             'reports',
             0,
         );
+
+        Queue::assertNothingPushed();
     }
 
     public function test_cannot_create_report_without_date_to(): void
     {
+        Queue::fake();
+
         $response = $this->postJson(
             '/api/reports',
             [
-                'date_from' => '2026-08-01 00:00:00',
+                'date_from' => '2026-08-01',
             ],
         );
 
-        $response->assertStatus(
-            Response::HTTP_UNPROCESSABLE_ENTITY,
-        )->assertJsonValidationErrors([
-            'date_to',
-        ]);
+        $response
+            ->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
+            ->assertJsonValidationErrors([
+                'date_to',
+            ]);
 
         $this->assertDatabaseCount(
             'reports',
             0,
         );
+
+        Queue::assertNothingPushed();
     }
 
     public function test_cannot_create_report_when_date_to_is_before_date_from(): void
     {
+        Queue::fake();
+
         $response = $this->postJson(
             '/api/reports',
             [
-                'date_from' => '2026-08-24 23:59:59',
-                'date_to' => '2026-08-01 00:00:00',
+                'date_from' => '2026-08-24',
+                'date_to' => '2026-08-01',
             ],
         );
 
-        $response->assertStatus(
-            Response::HTTP_UNPROCESSABLE_ENTITY,
-        )->assertJsonValidationErrors([
-            'date_to',
-        ]);
+        $response
+            ->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
+            ->assertJsonValidationErrors([
+                'date_to',
+            ]);
 
         $this->assertDatabaseCount(
             'reports',
             0,
         );
+
+        Queue::assertNothingPushed();
     }
 
-    public function test_report_is_marked_failed_when_generation_message_cannot_be_published(): void
+    protected function setUp(): void
     {
-        $publisher = $this->mock(ReportGenerationPublisher::class);
+        parent::setUp();
 
-        $publisher
-            ->shouldReceive('publishGeneration')
-            ->once()
-            ->andThrow(
-                new \RuntimeException('RabbitMQ is unavailable.'),
-            );
+        $this->admin = User::factory()
+            ->admin()
+            ->create();
 
-        $response = $this->postJson(
-            '/api/reports',
-            $this->validReportData(),
-        );
-
-        $response->assertStatus(
-            Response::HTTP_INTERNAL_SERVER_ERROR,
-        );
-
-        $this->assertDatabaseHas(
-            'reports',
-            [
-                'status' => 'failed',
-                'error' => 'RabbitMQ is unavailable.',
-            ],
+        $this->withHeader(
+            'Authorization',
+            'Bearer ' . JWTAuth::fromUser($this->admin),
         );
     }
 
@@ -164,8 +158,8 @@ final class CreateReportTest extends TestCase
     private function validReportData(): array
     {
         return [
-            'date_from' => '2026-08-01 00:00:00',
-            'date_to' => '2026-08-24 23:59:59',
+            'date_from' => '2026-08-01',
+            'date_to' => '2026-08-24',
         ];
     }
 }

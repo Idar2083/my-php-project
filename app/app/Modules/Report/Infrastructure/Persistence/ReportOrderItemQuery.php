@@ -18,6 +18,10 @@ final class ReportOrderItemQuery implements ReportOrderItemReader
         \DateTimeInterface $dateFrom,
         \DateTimeInterface $dateTo,
     ): LazyCollection {
+        $exclusiveDateTo = \DateTimeImmutable::createFromInterface(
+            $dateTo,
+        )->modify('+1 day');
+
         return DB::table('order_items')
             ->join(
                 'orders',
@@ -25,27 +29,31 @@ final class ReportOrderItemQuery implements ReportOrderItemReader
                 '=',
                 'order_items.order_id',
             )
-            ->join(
-                'products',
-                'products.id',
-                '=',
-                'order_items.product_id',
-            )
             ->select([
                 'order_items.id as order_item_id',
-                'products.name as product_name',
+                'order_items.product_name',
                 'order_items.price',
                 'order_items.quantity',
                 'orders.user_id',
             ])
-            ->whereBetween(
-                'orders.created_at',
-                [$dateFrom, $dateTo],
+            ->whereIn(
+                'orders.status',
+                [
+                    OrderStatus::PAID->value,
+                    OrderStatus::IN_PROCESS->value,
+                    OrderStatus::DELIVERING->value,
+                    OrderStatus::COMPLETED->value,
+                ],
             )
             ->where(
-                'orders.status',
-                '!=',
-                OrderStatus::CANCELLED->value,
+                'orders.paid_at',
+                '>=',
+                $dateFrom,
+            )
+            ->where(
+                'orders.paid_at',
+                '<',
+                $exclusiveDateTo,
             )
             ->orderBy('order_items.id')
             ->lazyById(

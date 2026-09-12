@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace App\Modules\Report\Domain\Models;
 
 use App\Modules\Report\Domain\Enums\ReportStatus;
+use Database\Factories\ReportFactory;
+use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -17,6 +20,9 @@ use Illuminate\Database\Eloquent\Model;
  */
 class Report extends Model
 {
+    /** @use HasFactory<ReportFactory> */
+    use HasFactory;
+
     protected $fillable = [
         'status',
         'date_from',
@@ -24,6 +30,14 @@ class Report extends Model
         'file_path',
         'error',
     ];
+
+    /**
+     * @return Factory<Report>
+     */
+    protected static function newFactory(): Factory
+    {
+        return ReportFactory::new();
+    }
 
     protected function casts(): array
     {

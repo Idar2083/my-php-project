@@ -18,12 +18,12 @@ final class GenerateDailyReport extends Command
         $date = now()->subDay();
 
         $dateFrom = $date->copy()->startOfDay();
-        $dateTo = $date->copy()->endOfDay();
+        $dateTo = $dateFrom->copy();
 
         try {
             $report = $handler->handle(
-                dateFrom: $dateFrom->toDateTimeString(),
-                dateTo: $dateTo->toDateTimeString(),
+                dateFrom: $dateFrom,
+                dateTo: $dateTo,
             );
 
             $this->info(
