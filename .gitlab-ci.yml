@@ -38,22 +38,61 @@ tests:
   stage: code-quality
   image: pizza-backend-ci:latest
   services:
-    - postgres:15-alpine
+    - name: postgres:15-alpine
+      alias: postgres
+    - name: rabbitmq:3.13-management-alpine
+      alias: rabbitmq
+    - name: minio/minio:latest
+      alias: minio
+      command:
+        - server
+        - /data
+
   variables:
     FF_NETWORK_PER_BUILD: "true"
+
     APP_ENV: testing
+
     DB_CONNECTION: pgsql
     DB_HOST: postgres
     DB_PORT: 5432
     DB_DATABASE: pizza_app_test
-    DB_USERNAME: postgres
-    DB_PASSWORD: postgres
+    DB_USERNAME: pizza_db_user
+    DB_PASSWORD: change_me_db_password
+
     POSTGRES_DB: pizza_app_test
-    POSTGRES_USER: postgres
-    POSTGRES_PASSWORD: postgres
+    POSTGRES_USER: pizza_db_user
+    POSTGRES_PASSWORD: change_me_db_password
+
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: 5672
+    RABBITMQ_USER: pizza_rabbitmq
+    RABBITMQ_PASSWORD: change_me_rabbitmq_password
+    RABBITMQ_VHOST: /
+
+    RABBITMQ_QUEUE: reports.generate
+    RABBITMQ_REPORTS_EXCHANGE: reports
+    RABBITMQ_REPORTS_GENERATE_QUEUE: reports.generate
+    RABBITMQ_REPORTS_GENERATE_ROUTING_KEY: reports.generate
+    RABBITMQ_REPORTS_DLQ_QUEUE: reports.generate.dlq
+    RABBITMQ_REPORTS_DLQ_ROUTING_KEY: reports.generate.dlq
+    RABBITMQ_REPORTS_COMPLETED_QUEUE: reports.completed
+    RABBITMQ_REPORTS_COMPLETED_ROUTING_KEY: reports.completed
+
+    MINIO_ROOT_USER: pizza_minio
+    MINIO_ROOT_PASSWORD: change_me_minio_password
+
+    AWS_ACCESS_KEY_ID: pizza_minio
+    AWS_SECRET_ACCESS_KEY: change_me_minio_password
+    AWS_DEFAULT_REGION: us-east-1
+    AWS_BUCKET: reports
+    AWS_ENDPOINT: http://minio:9000
+    AWS_USE_PATH_STYLE_ENDPOINT: "true"
+
   script:
     - cd /var/www/app
     - export APP_KEY=$(php artisan key:generate --show)
     - php artisan jwt:secret --force
     - php artisan migrate --force
+    - php artisan reports:rabbitmq:setup
     - php artisan test
