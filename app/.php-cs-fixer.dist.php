@@ -8,11 +8,13 @@ use PhpCsFixer\Finder;
 $finder = Finder::create()
     ->in([
         __DIR__ . '/app',
-        __DIR__ . '/bootstrap',
         __DIR__ . '/config',
         __DIR__ . '/database',
         __DIR__ . '/routes',
         __DIR__ . '/tests',
+    ])
+    ->append([
+        __DIR__ . '/bootstrap/app.php',
     ])
     ->exclude([
         'storage',
@@ -99,7 +101,7 @@ return (new Config())
                 'method_public',
                 'method_protected',
                 'method_private',
-                ],
+            ],
         ],
     ])
     ->setFinder($finder);

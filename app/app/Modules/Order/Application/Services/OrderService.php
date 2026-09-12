@@ -6,8 +6,8 @@ namespace App\Modules\Order\Application\Services;
 
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Domain\Models\Cart;
-use App\Modules\Order\Application\DTO\AddressDto;
 use App\Modules\Order\Domain\Enums\OrderStatus;
+use App\Modules\Order\Domain\Models\DTO\AddressDto;
 use App\Modules\Order\Domain\Models\Order;
 use App\Modules\Order\Domain\Models\OrderItem;
 use Illuminate\Database\Eloquent\Collection;
@@ -69,6 +69,7 @@ class OrderService
                 OrderItem::query()->create([
                     'order_id' => $order->id,
                     'product_id' => $item->product_id,
+                    'product_name' => $item->product->name,
                     'quantity' => $item->quantity,
                     'price' => $item->product->price,
                 ]);
@@ -98,5 +99,42 @@ class OrderService
             ->where('user_id', $user->id)
             ->with('items.product')
             ->findOrFail($orderId);
+    }
+
+    public function updateStatus(
+        int $orderId,
+        OrderStatus $status,
+    ): Order {
+        return DB::transaction(function () use ($orderId, $status): Order {
+            /** @var Order $order */
+            $order = Order::query()
+                ->lockForUpdate()
+                ->findOrFail($orderId);
+
+            if (
+                $order->status === OrderStatus::CANCELLED
+                || $order->status === OrderStatus::COMPLETED
+            ) {
+                throw new \DomainException(
+                    sprintf(
+                        'Cannot update status of a %s order.',
+                        $order->status->value,
+                    ),
+                );
+            }
+
+            $order->status = $status;
+
+            if (
+                $status === OrderStatus::PAID
+                && $order->paid_at === null
+            ) {
+                $order->paid_at = now();
+            }
+
+            $order->save();
+
+            return $order->refresh()->load('items.product');
+        });
     }
 }

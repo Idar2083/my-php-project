@@ -6,20 +6,32 @@ use App\Modules\Auth\Presentation\Controllers\AuthController;
 use App\Modules\Cart\Presentation\Controllers\CartController;
 use App\Modules\Catalog\Presentation\Controllers\ProductController;
 use App\Modules\Order\Presentation\Controllers\OrderController;
+use App\Modules\Report\Presentation\Controllers\ReportController;
 use Illuminate\Support\Facades\Route;
 
+# Public routes
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/products/{id}', [ProductController::class, 'show']);
 
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 
+# Admin routes
 Route::middleware(['auth:api', 'admin'])->group(function (): void {
     Route::post('/products', [ProductController::class, 'store']);
     Route::put('/products/{id}', [ProductController::class, 'update']);
     Route::delete('/products/{id}', [ProductController::class, 'destroy']);
+
+    Route::prefix('reports')->group(static function (): void {
+        Route::post('/', [ReportController::class, 'store']);
+        Route::get('/{report}', [ReportController::class, 'show']);
+        Route::get('/{report}/download', [ReportController::class, 'download']);
+    });
+
+    Route::put('/orders/{orderId}/status', [OrderController::class, 'updateStatus']);
 });
 
+# Authenticated routes
 Route::middleware(['auth:api'])->group(function (): void {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);

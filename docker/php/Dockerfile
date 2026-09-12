@@ -9,24 +9,33 @@ RUN apt-get update \
     git \
     tzdata \
     curl \
+    ca-certificates \
     libfcgi-bin \
     zip \
     unzip \
- && rm -rf /var/lib/apt/lists/* \
- && mkdir -p /var/www/app \
- && chown -R www-data:www-data /var/www/app
+    libicu-dev \
+    libpq-dev \
+    libzip-dev \
+    librabbitmq-dev \
+ && rm -rf /var/lib/apt/lists/*
 
-# Use mlocati/docker-php-extension-installer to install PHP extensions
-COPY --from=mlocati/php-extension-installer:latest /usr/bin/install-php-extensions /usr/local/bin/
+# PHP extension installer
+COPY --from=mlocati/php-extension-installer:2.11.12 \
+    /usr/bin/install-php-extensions \
+    /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/install-php-extensions && \
-    install-php-extensions \
+# PHP extensions
+RUN docker-php-ext-install \
         intl \
         opcache \
         pdo_pgsql \
         zip \
-        redis \
-        amqp
+        sockets
+
+# PECL extensions
+RUN install-php-extensions \
+        redis-6.3.0 \
+        amqp-2.2.0
 
 # Copy Composer binary from official image
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
@@ -48,7 +57,7 @@ ARG HOST_UID=1000
 ARG HOST_GID=1000
 
 # Xdebug only for dev
-RUN install-php-extensions xdebug
+RUN install-php-extensions xdebug-3.5.3
 
 COPY docker/php/conf/xdebug.ini /usr/local/etc/php/conf.d/xdebug.ini
 
@@ -66,7 +75,7 @@ CMD ["php-fpm"]
 # === BUILD ===
 FROM base AS build
 
-ENV APP_ENV=prod APP_DEBUG=0
+ENV APP_ENV=prod APP_DEBUG=0 COMPOSER_HOME=/tmp/composer
 
 COPY app/composer.json app/composer.lock ./
 RUN composer install --no-dev --prefer-dist --no-progress --no-interaction --no-scripts
@@ -74,13 +83,8 @@ RUN composer install --no-dev --prefer-dist --no-progress --no-interaction --no-
 COPY app .
 
 # Laravel optimization
-RUN cp .env.example .env
-RUN composer clear-cache
 RUN composer dump-autoload --optimize --no-dev
-RUN php artisan key:generate
 RUN php artisan package:discover --ansi
-RUN php artisan config:cache
-
 
 
 # === PROD ===
@@ -89,9 +93,39 @@ FROM base AS prod
 ENV APP_ENV=production APP_DEBUG=0
 
 COPY --from=build /var/www/app /var/www/app
+COPY docker/php/entrypoint.prod.sh /usr/local/bin/entrypoint.prod.sh
+COPY docker/php/entrypoint.worker.sh /usr/local/bin/entrypoint.worker.sh
 
-RUN chown -R www-data:www-data /var/www/app
+RUN chmod +x /usr/local/bin/entrypoint.prod.sh /usr/local/bin/entrypoint.worker.sh \
+    && mkdir -p \
+        /var/www/app/storage/framework/cache \
+        /var/www/app/storage/framework/sessions \
+        /var/www/app/storage/framework/views \
+        /var/www/app/storage/logs \
+        /var/www/app/bootstrap/cache \
+    && chown -R www-data:www-data /var/www/app
 
 USER www-data
 
+ENTRYPOINT ["/usr/local/bin/entrypoint.prod.sh"]
+
 CMD ["php-fpm"]
+
+
+# === CI ===
+FROM base AS ci
+
+ENV APP_ENV=testing \
+    APP_DEBUG=1 \
+    COMPOSER_HOME=/tmp/composer
+
+COPY app/composer.json app/composer.lock ./
+
+RUN mkdir -p /tmp/composer \
+ && composer install \
+        --prefer-dist \
+        --no-progress \
+        --no-interaction \
+        --no-scripts
+
+COPY app ./

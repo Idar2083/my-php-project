@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Modules\Order\Application\DTO;
+namespace App\Modules\Order\Domain\Models\DTO;
 
 final readonly class AddressDto
 {

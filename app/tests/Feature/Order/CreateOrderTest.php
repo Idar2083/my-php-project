@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Tests\Feature;
+namespace Tests\Feature\Order;
 
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Domain\Models\Cart;
@@ -13,7 +13,7 @@ use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 use Tymon\JWTAuth\Facades\JWTAuth;
 
-class OrderTest extends TestCase
+final class CreateOrderTest extends TestCase
 {
     use RefreshDatabase;
 
@@ -44,6 +44,7 @@ class OrderTest extends TestCase
 
         $this->assertDatabaseHas('order_items', [
             'product_id' => $product->id,
+            'product_name' => 'Pepperoni',
             'quantity' => 2,
             'price' => 500,
         ]);
@@ -87,9 +88,9 @@ class OrderTest extends TestCase
 
     public function test_cannot_create_order_with_empty_cart(): void
     {
-        Cart::query()->create([
-            'user_id' => $this->user->id,
-        ]);
+        Cart::factory()
+            ->for($this->user)
+            ->create();
 
         $this->createOrder()
             ->assertUnprocessable()
@@ -113,58 +114,6 @@ class OrderTest extends TestCase
             ]);
 
         $this->assertDatabaseCount('orders', 0);
-    }
-
-    public function test_can_get_own_orders(): void
-    {
-        $this->addProductToCart();
-
-        $this->createOrder()
-            ->assertCreated();
-
-        $this->getJson('/api/orders')
-            ->assertOk()
-            ->assertJsonCount(1, 'data');
-    }
-
-    public function test_can_get_order_by_id(): void
-    {
-        $this->addProductToCart();
-
-        $orderId = $this->createOrder()
-            ->assertCreated()
-            ->json('data.id');
-
-        $this->getJson('/api/orders/' . $orderId)
-            ->assertOk()
-            ->assertJsonPath('data.id', $orderId);
-    }
-
-    public function test_cannot_get_another_users_order(): void
-    {
-        $this->addProductToCart();
-
-        $orderId = $this->createOrder()
-            ->assertCreated()
-            ->json('data.id');
-
-        $otherUser = User::factory()->create();
-
-        auth('api')->logout();
-
-        $this->withHeader(
-            'Authorization',
-            'Bearer ' . JWTAuth::fromUser($otherUser),
-        )->getJson('/api/orders/' . $orderId)
-            ->assertNotFound();
-    }
-
-    public function test_guest_cannot_access_orders(): void
-    {
-        $this->withHeader('Authorization', '');
-
-        $this->getJson('/api/orders')
-            ->assertUnauthorized();
     }
 
     protected function setUp(): void
@@ -201,23 +150,21 @@ class OrderTest extends TestCase
         int $quantity = 2,
         int $price = 500,
     ): Product {
-        $product = Product::query()->create([
+        $product = Product::factory()->create([
             'name' => $name,
-            'category' => 'pizza',
-            'description' => 'Test product',
             'price' => $price,
-            'weight' => 0.55,
         ]);
 
         $cart = Cart::query()->firstOrCreate([
             'user_id' => $this->user->id,
         ]);
 
-        CartItem::query()->create([
-            'cart_id' => $cart->id,
-            'product_id' => $product->id,
-            'quantity' => $quantity,
-        ]);
+        CartItem::factory()
+            ->for($cart)
+            ->for($product)
+            ->create([
+                'quantity' => $quantity,
+            ]);
 
         return $product;
     }
