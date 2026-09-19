@@ -99,5 +99,7 @@ tests:
     - php artisan jwt:secret --force
     - php artisan migrate --force
     - until php -r '$socket = @fsockopen("rabbitmq", 5672, $errno, $errstr, 1); if ($socket !== false) { fclose($socket); exit(0); } exit(1);'; do echo "Waiting for RabbitMQ..."; sleep 2; done
+    - until curl -fsS http://minio:9000/minio/health/live; do echo "Waiting for MinIO..."; sleep 2; done
+    - php -r '$client = new Aws\S3\S3Client(["version" => "latest", "region" => getenv("AWS_DEFAULT_REGION"), "endpoint" => getenv("AWS_ENDPOINT"), "credentials" => ["key" => getenv("AWS_ACCESS_KEY_ID"), "secret" => getenv("AWS_SECRET_ACCESS_KEY")], "use_path_style_endpoint" => true]); try { $client->headBucket(["Bucket" => getenv("AWS_BUCKET")]); } catch (\Aws\S3\Exception\S3Exception $e) { if ($e->getStatusCode() !== 404) { throw $e; } $client->createBucket(["Bucket" => getenv("AWS_BUCKET")]); }'
     - php artisan reports:rabbitmq:setup
     - php artisan test
