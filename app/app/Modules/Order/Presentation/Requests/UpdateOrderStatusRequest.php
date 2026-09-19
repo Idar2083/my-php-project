@@ -28,11 +28,10 @@ class UpdateOrderStatusRequest extends ApiRequest
         ];
     }
 
-    /**
-     * Возвращает валидированный статус сразу в виде объекта Enum
-     */
     public function getStatus(): OrderStatus
     {
-        return $this->validated('status');
+        return OrderStatus::from(
+            $this->validated('status'),
+        );
     }
 }

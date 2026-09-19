@@ -70,6 +70,8 @@ tests:
     RABBITMQ_PORT: 5672
     RABBITMQ_USER: pizza_rabbitmq
     RABBITMQ_PASSWORD: change_me_rabbitmq_password
+    RABBITMQ_DEFAULT_USER: pizza_rabbitmq
+    RABBITMQ_DEFAULT_PASS: change_me_rabbitmq_password
     RABBITMQ_VHOST: /
 
     RABBITMQ_QUEUE: reports.generate
@@ -96,5 +98,6 @@ tests:
     - export APP_KEY=$(php artisan key:generate --show)
     - php artisan jwt:secret --force
     - php artisan migrate --force
+    - until php -r '$socket = @fsockopen("rabbitmq", 5672, $errno, $errstr, 1); if ($socket !== false) { fclose($socket); exit(0); } exit(1);'; do echo "Waiting for RabbitMQ..."; sleep 2; done
     - php artisan reports:rabbitmq:setup
     - php artisan test

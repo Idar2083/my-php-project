@@ -5,16 +5,27 @@ declare(strict_types=1);
 namespace App\Modules\Auth\Presentation\Controllers;
 
 use App\Http\Controllers\Controller;
-use App\Modules\Auth\Domain\Models\User;
+use App\Modules\Auth\Application\Handlers\RegisterUserHandler;
 use App\Modules\Auth\Presentation\Requests\LoginRequest;
 use App\Modules\Auth\Presentation\Requests\RegisterRequest;
 use Symfony\Component\HttpFoundation\Response;
 
 final class AuthController extends Controller
 {
+    public function __construct(
+        private readonly RegisterUserHandler $registerUserHandler,
+    ) {
+    }
+
     public function register(RegisterRequest $request): Response
     {
-        $user = User::create($request->validated());
+        $data = $request->validated();
+
+        $user = $this->registerUserHandler->handle(
+            name: $data['name'],
+            email: $data['email'],
+            password: $data['password'],
+        );
 
         /** @var \Tymon\JWTAuth\JWTAuth $jwtAuth */
         $jwtAuth = app('tymon.jwt.auth');
@@ -35,7 +46,7 @@ final class AuthController extends Controller
 
         if ($token === false) {
             return response()->json([
-                'message' => 'Invalid credentials',
+                'message' => __('api.auth.invalid_credentials'),
             ], Response::HTTP_UNAUTHORIZED);
         }
 
@@ -55,7 +66,7 @@ final class AuthController extends Controller
         auth('api')->logout();
 
         return response()->json([
-            'message' => 'Successfully logged out',
+            'message' => __('api.auth.logged_out'),
         ]);
     }
 }

@@ -10,6 +10,7 @@ use App\Modules\Order\Domain\Enums\OrderStatus;
 use App\Modules\Order\Domain\Models\DTO\AddressDto;
 use App\Modules\Order\Domain\Models\Order;
 use App\Modules\Order\Domain\Models\OrderItem;
+use App\Shared\Application\Exceptions\TranslatableException;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -28,7 +29,9 @@ class OrderService
 
             if ($cart === null || $cart->items->isEmpty()) {
                 throw ValidationException::withMessages([
-                    'cart' => ['The cart must contain at least one product.'],
+                    'cart' => [
+                        __('api.cart.empty'),
+                    ],
                 ]);
             }
 
@@ -37,10 +40,9 @@ class OrderService
             if ($totalItems > self::MAX_ORDER_ITEMS) {
                 throw ValidationException::withMessages([
                     'cart' => [
-                        sprintf(
-                            'The maximum order size is %d items.',
-                            self::MAX_ORDER_ITEMS,
-                        ),
+                        __('api.order.max_items', [
+                            'max' => self::MAX_ORDER_ITEMS,
+                        ]),
                     ],
                 ]);
             }
@@ -115,11 +117,11 @@ class OrderService
                 $order->status === OrderStatus::CANCELLED
                 || $order->status === OrderStatus::COMPLETED
             ) {
-                throw new \DomainException(
-                    sprintf(
-                        'Cannot update status of a %s order.',
-                        $order->status->value,
-                    ),
+                throw new TranslatableException(
+                    'api.order.invalid_status',
+                    [
+                        'status' => $order->status->value,
+                    ],
                 );
             }
 
