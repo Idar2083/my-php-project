@@ -8,12 +8,14 @@ use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Domain\Models\Cart;
 use App\Modules\Cart\Domain\Models\CartItem;
 use App\Modules\Catalog\Domain\Models\Product;
-use Illuminate\Support\Facades\Artisan;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
 class CartConcurrencyTest extends TestCase
 {
+    use DatabaseMigrations;
+
     private User $user;
 
     private Cart $cart;
@@ -86,31 +88,21 @@ class CartConcurrencyTest extends TestCase
     {
         parent::setUp();
 
-        config([
-            'database.default' => 'pgsql',
-            'database.connections.pgsql.host' => 'postgres',
-            'database.connections.pgsql.port' => 5_432,
-            'database.connections.pgsql.database' => 'pizza_app_test',
-            'database.connections.pgsql.username' => 'pizza_db_user',
-            'database.connections.pgsql.password' => (string) env('DB_PASSWORD'),
-        ]);
-
-        Artisan::call('migrate:fresh', [
-            '--database' => 'pgsql',
-            '--force' => true,
-        ]);
-
         $this->user = User::factory()->create();
 
-        $this->cart = Cart::factory()
-            ->for($this->user)
-            ->create();
+        $this->cart = Cart::query()->create([
+            'user_id' => $this->user->id,
+        ]);
     }
 
     private function createProduct(string $name): Product
     {
-        return Product::factory()->create([
+        return Product::query()->create([
             'name' => $name,
+            'category' => 'pizza',
+            'description' => 'Concurrency test product',
+            'price' => 500,
+            'weight' => 0.55,
         ]);
     }
 
@@ -118,12 +110,11 @@ class CartConcurrencyTest extends TestCase
         Product $product,
         int $quantity,
     ): CartItem {
-        return CartItem::factory()
-            ->for($this->cart)
-            ->for($product)
-            ->create([
-                'quantity' => $quantity,
-            ]);
+        return CartItem::query()->create([
+            'cart_id' => $this->cart->id,
+            'product_id' => $product->id,
+            'quantity' => $quantity,
+        ]);
     }
 
     private function createProcess(
