@@ -27,11 +27,11 @@
         <env name="BROADCAST_CONNECTION" value="null"/>
         <env name="CACHE_STORE" value="array"/>
 
-        <env name="DB_CONNECTION" value="pgsql" force="true"/>
-        <env name="DB_HOST" value="postgres" force="true"/>
-        <env name="DB_PORT" value="5432" force="true"/>
-        <env name="DB_DATABASE" value="pizza_app_test" force="true"/>
-        <env name="DB_USERNAME" value="pizza_db_user" force="true"/>
+        <server name="DB_CONNECTION" value="pgsql"/>
+        <server name="DB_HOST" value="postgres"/>
+        <server name="DB_PORT" value="5432"/>
+        <server name="DB_DATABASE" value="pizza_app_test"/>
+        <server name="DB_USERNAME" value="pizza_db_user"/>
 
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync" force="true"/>
