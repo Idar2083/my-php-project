@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Modules\Report\Infrastructure\Console;
+namespace App\Modules\Report\Infrastructure\Messaging\Console;
 
 use App\Modules\Report\Application\Handlers\CreateReportHandler;
 use Illuminate\Console\Command;

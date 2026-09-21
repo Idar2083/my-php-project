@@ -7,7 +7,3 @@ use Illuminate\Support\Facades\Schedule;
 Schedule::command('reports:generate-daily')
     ->dailyAt('02:00')
     ->withoutOverlapping();
-
-Schedule::command('outbox:process')
-    ->everyMinute()
-    ->withoutOverlapping();
