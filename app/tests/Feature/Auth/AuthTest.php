@@ -65,6 +65,123 @@ final class AuthTest extends TestCase
         $response->assertStatus(Response::HTTP_OK);
     }
 
+    public function test_unauthenticated_response_uses_russian_locale(): void
+    {
+        $response = $this
+            ->withHeader('Accept-Language', 'ru')
+            ->getJson('/api/orders');
+
+        $response
+            ->assertStatus(Response::HTTP_UNAUTHORIZED)
+            ->assertExactJson([
+                'message' => 'Необходима аутентификация.',
+            ]);
+    }
+
+    public function test_unauthenticated_response_uses_english_locale(): void
+    {
+        $response = $this
+            ->withHeader('Accept-Language', 'en')
+            ->getJson('/api/orders');
+
+        $response
+            ->assertStatus(Response::HTTP_UNAUTHORIZED)
+            ->assertExactJson([
+                'message' => 'Unauthenticated.',
+            ]);
+    }
+
+    public function test_unauthenticated_response_unknown_locale_falls_back_to_english(): void
+    {
+        $response = $this
+            ->withHeader('Accept-Language', 'de')
+            ->getJson('/api/orders');
+
+        $response
+            ->assertStatus(Response::HTTP_UNAUTHORIZED)
+            ->assertExactJson([
+                'message' => 'Unauthenticated.',
+            ]);
+    }
+
+    public function test_registration_validation_uses_russian_locale(): void
+    {
+        $response = $this
+            ->withHeader('Accept-Language', 'ru')
+            ->postJson('/api/register', [
+                'name' => '',
+                'email' => 'invalid',
+                'password' => 'short',
+            ]);
+
+        $response
+            ->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
+            ->assertJsonPath(
+                'errors.name.0',
+                'Поле «имя» обязательно для заполнения.',
+            )
+            ->assertJsonPath(
+                'errors.email.0',
+                'Поле «электронная почта» должно содержать корректный адрес электронной почты.',
+            )
+            ->assertJsonPath(
+                'errors.password.0',
+                'Поле «пароль» должно содержать не менее 8 символов.',
+            );
+    }
+
+    public function test_registration_validation_uses_english_locale(): void
+    {
+        $response = $this
+            ->withHeader('Accept-Language', 'en')
+            ->postJson('/api/register', [
+                'name' => '',
+                'email' => 'invalid',
+                'password' => 'short',
+            ]);
+
+        $response
+            ->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
+            ->assertJsonPath(
+                'errors.name.0',
+                'The name field is required.',
+            )
+            ->assertJsonPath(
+                'errors.email.0',
+                'The email field must be a valid email address.',
+            )
+            ->assertJsonPath(
+                'errors.password.0',
+                'The password field must be at least 8 characters.',
+            );
+    }
+
+    public function test_registration_validation_unknown_locale_falls_back_to_english(): void
+    {
+        $response = $this
+            ->withHeader('Accept-Language', 'de')
+            ->postJson('/api/register', [
+                'name' => '',
+                'email' => 'invalid',
+                'password' => 'short',
+            ]);
+
+        $response
+            ->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
+            ->assertJsonPath(
+                'errors.name.0',
+                'The name field is required.',
+            )
+            ->assertJsonPath(
+                'errors.email.0',
+                'The email field must be a valid email address.',
+            )
+            ->assertJsonPath(
+                'errors.password.0',
+                'The password field must be at least 8 characters.',
+            );
+    }
+
     /**
      * @return array{
      *     name: string,

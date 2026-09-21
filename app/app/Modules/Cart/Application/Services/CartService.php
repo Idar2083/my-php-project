@@ -194,18 +194,21 @@ class CartService
             'pizza' => Cart::MAX_PIZZAS,
             'drink' => Cart::MAX_DRINKS,
             default => throw ValidationException::withMessages([
-                'product_id' => ['Unsupported product category.'],
+                'product_id' => [
+                    __('api.cart.unsupported_category'),
+                ],
             ]),
         };
 
         if ($totalQuantity > $limit) {
             throw ValidationException::withMessages([
                 'quantity' => [
-                    sprintf(
-                        'The maximum number of %s items in the cart is %d.',
-                        $product->category,
-                        $limit,
-                    ),
+                    __('api.cart.max_items', [
+                        'category' => __(
+                            'api.categories.' . $product->category,
+                        ),
+                        'limit' => $limit,
+                    ]),
                 ],
             ]);
         }

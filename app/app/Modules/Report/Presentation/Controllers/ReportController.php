@@ -29,7 +29,7 @@ final class ReportController
 
             return response()->json(
                 [
-                    'message' => 'Report generation is temporarily unavailable.',
+                    'message' => __('api.report.generation_unavailable'),
                 ],
                 Response::HTTP_SERVICE_UNAVAILABLE,
             );
@@ -68,14 +68,14 @@ final class ReportController
         ) {
             abort(
                 Response::HTTP_NOT_FOUND,
-                'Report file is not available.',
+                __('api.report.file_unavailable'),
             );
         }
 
         if (!$storage->exists($report->file_path)) {
             abort(
                 Response::HTTP_NOT_FOUND,
-                'File missing in storage.',
+                __('api.report.file_missing'),
             );
         }
 

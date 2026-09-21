@@ -16,13 +16,13 @@ class AdminMiddleware
 
         if (! $user) {
             return response()->json([
-                'message' => 'Unauthenticated.',
+                'message' => __('api.authorization.unauthenticated'),
             ], Response::HTTP_UNAUTHORIZED);
         }
 
         if ($user->role !== UserRole::ADMIN) {
             return response()->json([
-                'message' => 'Forbidden.',
+                'message' => __('api.authorization.forbidden'),
             ], Response::HTTP_FORBIDDEN);
         }
 
