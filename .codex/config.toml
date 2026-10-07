@@ -1,0 +1,15 @@
+[mcp_servers.context7]
+url = "https://mcp.context7.com/mcp"
+startup_timeout_sec = 30
+
+[mcp_servers.firecrawl]
+url = "https://mcp.firecrawl.dev/v2/mcp"
+startup_timeout_sec = 30
+
+[mcp_servers.context_hub]
+command = "sh"
+args = [
+  "-c",
+  'exec ctx server -c "$(git rev-parse --show-toplevel)"'
+]
+startup_timeout_sec = 30
