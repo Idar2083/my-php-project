@@ -12,3 +12,7 @@ node_modules
 vendor
 
 bootstrap/cache/*.php
+# Local agent tooling
+/.agents/
+/.codex/
+/AGENTS.md
