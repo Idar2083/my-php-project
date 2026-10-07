@@ -19,7 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withCommands([
-        __DIR__ . '/../app/Modules/Report/Infrastructure/Console',
+        __DIR__ . '/../app/Modules/Report/Infrastructure/Messaging/Console',
         __DIR__ . '/../app/Shared/Infrastructure/Outbox/Console',
     ])
     ->withSchedule(function (\Illuminate\Console\Scheduling\Schedule $schedule): void {
