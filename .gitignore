@@ -15,4 +15,3 @@ bootstrap/cache/*.php
 # Local agent tooling
 /.agents/
 /.codex/
-/AGENTS.md
