@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Modules\Auth\Presentation\Controllers\AdminUserController;
 use App\Modules\Auth\Presentation\Controllers\AuthController;
 use App\Modules\Cart\Presentation\Controllers\CartController;
 use App\Modules\Catalog\Presentation\Controllers\ProductController;
@@ -18,6 +19,10 @@ Route::post('/login', [AuthController::class, 'login']);
 
 # Admin routes
 Route::middleware(['auth:api', 'admin'])->group(function (): void {
+    Route::get('/admin/users', [AdminUserController::class, 'index']);
+    Route::patch('/admin/users/{userId}/role', [AdminUserController::class, 'updateRole'])
+        ->whereNumber('userId');
+
     Route::post('/products', [ProductController::class, 'store']);
     Route::put('/products/{id}', [ProductController::class, 'update']);
     Route::delete('/products/{id}', [ProductController::class, 'destroy']);

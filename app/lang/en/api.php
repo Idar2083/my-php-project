@@ -6,6 +6,8 @@ return [
     'auth' => [
         'invalid_credentials' => 'Invalid credentials.',
         'logged_out' => 'Successfully logged out.',
+        'self_demotion' => 'Administrators cannot demote themselves.',
+        'last_admin' => 'The last administrator cannot be demoted.',
     ],
 
     'authorization' => [
