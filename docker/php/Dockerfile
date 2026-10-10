@@ -85,6 +85,7 @@ COPY app .
 # Laravel optimization
 RUN composer dump-autoload --optimize --no-dev
 RUN php artisan package:discover --ansi
+RUN composer openapi
 
 
 # === PROD ===
