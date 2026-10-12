@@ -59,6 +59,7 @@ tests:
         - -c
       command:
         - |
+          set -e
           until /usr/bin/mc alias set minio http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
               echo "Waiting for MinIO..."
               sleep 2
@@ -112,12 +113,29 @@ tests:
 
   script:
     - cd /var/www/app
-    - export APP_KEY=$(php artisan key:generate --show)
+    - touch .env
+    - APP_KEY=$(php artisan key:generate --show)
+    - export APP_KEY
     - JWT_SECRET=$(php artisan jwt:secret --show)
     - export JWT_SECRET
+    - |
+      php -r '
+        $dsn = sprintf("pgsql:host=%s;port=%s;dbname=%s;connect_timeout=2", getenv("DB_HOST"), getenv("DB_PORT"), getenv("DB_DATABASE"));
+        for ($attempt = 0; $attempt < 30; $attempt++) {
+            try {
+                new PDO($dsn, getenv("DB_USERNAME"), getenv("DB_PASSWORD"));
+                exit(0);
+            } catch (PDOException $exception) {
+                sleep(2);
+            }
+        }
+        fwrite(STDERR, "PostgreSQL did not become ready.\n");
+        exit(1);
+      '
     - php artisan migrate --force
     - until php -r '$socket = @fsockopen("rabbitmq", 5672, $errno, $errstr, 1); if ($socket !== false) { fclose($socket); exit(0); } exit(1);'; do echo "Waiting for RabbitMQ..."; sleep 2; done
     - until curl -fsS http://minio:9000/minio/health/live; do echo "Waiting for MinIO..."; sleep 2; done
     - php artisan reports:rabbitmq:setup
     - composer openapi
     - php artisan test
+    - ./vendor/bin/phpunit tests/Unit
