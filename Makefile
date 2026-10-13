@@ -9,12 +9,13 @@ include .env.local
 export
 endif
 
-.PHONY: up down logs bash composer-install jwt-secret
+.PHONY: up down logs bash composer-install openapi jwt-secret
 
 up:
 	docker compose --env-file .env --env-file .env.local \
     		up -d --build --remove-orphans
 	$(MAKE) composer-install
+	$(MAKE) openapi
 	@echo "Application is available at: http://localhost:$${NGINX_PORT}/"
 
 down:
@@ -28,6 +29,9 @@ bash:
 
 composer-install:
 	docker compose exec -T php sh -lc 'mkdir -p vendor && composer install --no-interaction --prefer-dist'
+
+openapi:
+	docker compose exec -T php composer openapi
 
 jwt-secret:
 	docker compose exec -T php php artisan jwt:secret --force

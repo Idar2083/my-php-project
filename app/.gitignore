@@ -28,6 +28,7 @@ phpstan.neon
 /public/storage
 
 /storage/*.key
+/storage/api-docs/
 /storage/pail
 
 /vendor

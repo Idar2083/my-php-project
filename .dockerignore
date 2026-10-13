@@ -9,3 +9,12 @@ app/bootstrap/cache/*.php
 
 docker/data
 docker/volumes
+app/storage/api-docs
+
+# Build with runtime configuration supplied only at deployment.
+.env
+.env.*
+!.env.example
+app/.env
+app/.env.*
+!app/.env.example
