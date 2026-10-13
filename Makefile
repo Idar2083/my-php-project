@@ -15,10 +15,13 @@ up:
 	docker compose --env-file .env --env-file .env.local \
     		up -d --build --remove-orphans
 	$(MAKE) composer-install
+	docker compose --env-file .env --env-file .env.local \
+		--profile frontend up -d --build --wait frontend
+	@echo "Frontend is available at: http://localhost:$${FRONTEND_PORT:-5173}/"
 	@echo "Application is available at: http://localhost:$${NGINX_PORT}/"
 
 down:
-	docker compose down
+	docker compose --profile frontend down
 
 logs:
 	docker compose logs -f

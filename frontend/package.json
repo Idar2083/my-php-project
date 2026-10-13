@@ -1,0 +1,20 @@
+{
+  "name": "pizza-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest run"
+  },
+  "dependencies": { "vue": "3.5.44" },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.10",
+    "@vue/test-utils": "2.5.1",
+    "jsdom": "30.1.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.4"
+  }
+}
