@@ -155,13 +155,13 @@ Keep module-specific domain and business logic in its owning module; do not move
 
 Run the relevant tests and quality checks after making changes.
 
-Configured test suites (Feature and Integration):
+Configured test suites (Feature, Integration, and Unit):
 
 ```bash
 docker compose exec php ./vendor/bin/phpunit
 ```
 
-`app/phpunit.xml` uses PostgreSQL and does not include `tests/Unit` in its configured suites. Run relevant Unit tests explicitly when needed:
+`app/phpunit.xml` uses PostgreSQL and includes `tests/Unit` in its configured suites. To run only Unit tests when relevant:
 
 ```bash
 docker compose exec php ./vendor/bin/phpunit tests/Unit

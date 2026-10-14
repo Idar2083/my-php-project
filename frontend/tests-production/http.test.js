@@ -46,7 +46,7 @@ test('SPA, built assets and cache policy', async () => {
     assert.doesNotMatch(missing.headers.get('cache-control') || '', /immutable/)
     assert.notEqual(await missing.text(), html)
   }
-  // The isolated runner mounts these files, proving the rules apply to existing files.
+  // The isolated runner supplies these files, proving the rules apply to existing files.
   if (process.env.PRODUCTION_FIXTURES === '1') {
     const mutable = await get('/assets/review.txt')
     assert.equal(mutable.status, 200)

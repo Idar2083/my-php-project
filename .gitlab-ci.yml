@@ -1,44 +1,75 @@
 stages:
   - build
   - code-quality
+  - production-integration
+  - publish
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH'
+    - when: never
+
+default:
+  image:
+    name: "$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID"
+    pull_policy: always
 
 variables:
   DOCKER_HOST: unix:///var/run/docker.sock
   DOCKER_TLS_CERTDIR: ""
 
+.pipeline-job:
+  rules:
+    - when: on_success
+
 build:
+  extends: .pipeline-job
   stage: build
   image: docker:latest
+  before_script: &registry-login
+    - |
+      test -n "$CI_REGISTRY" && test -n "$CI_REGISTRY_IMAGE" && test -n "$CI_PIPELINE_ID" && test -n "$CI_REGISTRY_USER" && test -n "$CI_REGISTRY_PASSWORD" || { echo "Required GitLab Container Registry variables are unavailable" >&2; exit 1; }
+      docker info >/dev/null
+      DOCKER_CONFIG=$(mktemp -d)
+      export DOCKER_CONFIG
+      trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+      printf '%s' "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" --username "$CI_REGISTRY_USER" --password-stdin
   script:
     - docker run --rm php:8.4-fpm php -r 'echo gethostbyname("pecl.php.net"), PHP_EOL;'
     - docker run --rm php:8.4-fpm php -r '$f=fopen("https://pecl.php.net/channel.xml","r"); var_dump($f !== false);'
-    - docker build --target ci -f docker/php/Dockerfile -t pizza-backend-ci:latest .
-    - docker build --target prod -f docker/php/Dockerfile -t pizza-backend:latest .
+    - docker build --target ci -f docker/php/Dockerfile -t "$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID" .
+    - docker build --target prod -f docker/php/Dockerfile -t "$CI_REGISTRY_IMAGE/php-build-check:$CI_PIPELINE_ID" .
+    - docker push "$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID"
 
 phpstan:
+  extends: .pipeline-job
   stage: code-quality
-  image: pizza-backend-ci:latest
   script:
     - cd /var/www/app
+    - composer validate --strict
     - ./vendor/bin/phpstan analyse app routes config database
 
 php-cs-fixer:
+  extends: .pipeline-job
   stage: code-quality
-  image: pizza-backend-ci:latest
   script:
     - cd /var/www/app
     - ./vendor/bin/php-cs-fixer fix --dry-run --diff
 
 rector:
+  extends: .pipeline-job
   stage: code-quality
-  image: pizza-backend-ci:latest
   script:
     - cd /var/www/app
     - ./vendor/bin/rector process --dry-run
 
 tests:
+  extends: .pipeline-job
   stage: code-quality
-  image: pizza-backend-ci:latest
   services:
     - name: postgres:15-alpine
       alias: postgres
@@ -52,24 +83,9 @@ tests:
         - server
         - /data
 
-    - name: minio/mc:latest
-      alias: minio-mc
-      entrypoint:
-        - /bin/sh
-        - -c
-      command:
-        - |
-          until /usr/bin/mc alias set minio http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do
-              echo "Waiting for MinIO..."
-              sleep 2
-          done
-
-          /usr/bin/mc mb --ignore-existing "minio/$AWS_BUCKET"
-
-          tail -f /dev/null
-
   variables:
     FF_NETWORK_PER_BUILD: "true"
+    CI_SERVICE_WAIT_TIMEOUT: "120"
 
     APP_ENV: testing
 
@@ -112,10 +128,86 @@ tests:
 
   script:
     - cd /var/www/app
-    - export APP_KEY=$(php artisan key:generate --show)
-    - php artisan jwt:secret --force
+    - test -e .env || touch .env
+    - |
+      set +x
+      APP_KEY=$(php -r 'echo "base64:".base64_encode(random_bytes(32));')
+      JWT_SECRET=$(php -r 'echo bin2hex(random_bytes(32));')
+      export APP_KEY JWT_SECRET
+    - php "$CI_PROJECT_DIR/docker/ci/wait-services.php"
     - php artisan migrate --force
-    - until php -r '$socket = @fsockopen("rabbitmq", 5672, $errno, $errstr, 1); if ($socket !== false) { fclose($socket); exit(0); } exit(1);'; do echo "Waiting for RabbitMQ..."; sleep 2; done
-    - until curl -fsS http://minio:9000/minio/health/live; do echo "Waiting for MinIO..."; sleep 2; done
     - php artisan reports:rabbitmq:setup
-    - php artisan test
+    - mkdir -p "$CI_PROJECT_DIR/reports"
+    - php artisan test --log-junit="$CI_PROJECT_DIR/reports/phpunit.xml"
+  artifacts:
+    when: always
+    paths:
+      - reports/phpunit.xml
+    reports:
+      junit: reports/phpunit.xml
+
+frontend:
+  extends: .pipeline-job
+  stage: code-quality
+  image: node:24-alpine
+  variables:
+    VITE_API_BASE_URL: /api
+  script:
+    - cd "$CI_PROJECT_DIR/frontend"
+    - npm ci --no-audit --no-fund
+    - npm test
+    - npm run build
+
+production-config:
+  extends: .pipeline-job
+  stage: code-quality
+  image: docker:latest
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - |
+      # Public fixtures for config validation only; never read deployment .env.local.
+      export APP_KEY=ci-compose-placeholder JWT_SECRET=ci-compose-placeholder
+      export POSTGRES_DB=pizza_ci POSTGRES_USER=pizza_ci POSTGRES_PASSWORD=ci-only
+      export DB_CONNECTION=pgsql DB_HOST=postgres DB_PORT=5432
+      export DB_DATABASE=pizza_ci DB_USERNAME=pizza_ci DB_PASSWORD=ci-only
+      export REDIS_PASSWORD=ci-only RABBITMQ_USER=pizza_ci RABBITMQ_PASSWORD=ci-only
+      export MINIO_ROOT_USER=pizza_ci MINIO_ROOT_PASSWORD=ci-only MINIO_BUCKET=reports
+      export NGINX_PORT=8080 PRODUCTS_CACHE_TTL=3600 COMPOSE_PROFILES=
+    - docker compose --env-file .env -f docker-compose.yml config --quiet
+    - docker compose --env-file .env --profile frontend -f docker-compose.yml config --quiet
+    - docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+    - docker build --target prod -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID" frontend
+    - docker run --rm --network none --entrypoint nginx "$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID" -t
+
+production-integration:
+  extends: .pipeline-job
+  stage: production-integration
+  image: docker:latest
+  dependencies: []
+  script:
+    - sh "$CI_PROJECT_DIR/docker/ci/production-integration.sh"
+  after_script:
+    - sh "$CI_PROJECT_DIR/docker/ci/cleanup-production-check.sh"
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - reports/production-images.tar.gz
+      - reports/production-images.ids
+      - reports/production-images.sha256
+
+publish-production:
+  extends: .pipeline-job
+  stage: publish
+  image: docker:latest
+  dependencies:
+    - production-integration
+  before_script: *registry-login
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - sha256sum -c reports/production-images.sha256
+    - docker load --input reports/production-images.tar.gz
+    - |
+      docker image inspect "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID" "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID" --format '{{.Id}}' > reports/production-images.loaded.ids
+      diff reports/production-images.loaded.ids reports/production-images.ids
+    - docker push "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID"
+    - docker push "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID"

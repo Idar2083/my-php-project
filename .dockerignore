@@ -33,3 +33,6 @@ app/auth.json
 .agents
 .codex
 .aws
+
+# Generated CI image archives and reports.
+reports

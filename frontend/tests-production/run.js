@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { hostname, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
@@ -10,7 +10,19 @@ import { setTimeout } from 'node:timers/promises'
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const root = resolve(frontend, '..')
 // The project name, credentials, volumes and port are never taken from the user's deployment.
-const project = `pizza-stage122-${randomBytes(6).toString('hex')}`
+const project = process.env.PRODUCTION_CHECK_PROJECT || `pizza-stage122-${randomBytes(6).toString('hex')}`
+assert.match(project, /^pizza-stage122-[a-f0-9]{12}$/)
+const containerNetwork = process.env.PRODUCTION_CHECK_NETWORK === 'container'
+assert.ok(!process.env.PRODUCTION_CHECK_NETWORK || containerNetwork)
+const resourceOwner = process.env.CI_JOB_ID || project
+assert.match(resourceOwner, /^[a-zA-Z0-9_-]+$/)
+const exportImages = process.env.PRODUCTION_EXPORT_IMAGES === '1'
+if (exportImages) {
+  assert.match(process.env.CI_PIPELINE_ID || '', /^\d+$/)
+  assert.match(process.env.CI_REGISTRY_IMAGE || '', /^[a-z0-9][a-z0-9.:/_-]+$/)
+}
+let networkAttached = false
+let ownsProject = false
 const directory = mkdtempSync(join(tmpdir(), `${project}-`))
 const password = randomBytes(24).toString('hex')
 const values = {
@@ -36,11 +48,25 @@ const fixtures = {
 for (const [name, contents] of Object.entries(fixtures)) writeFileSync(join(directory, name), contents)
 const override = join(directory, 'override.yml')
 writeFileSync(override, `services:
+${['php', 'postgres', 'redis', 'rabbitmq', 'minio'].map(service => `  ${service}:
+    labels:
+      pizza.ci.production-check: ${project}
+      pizza.ci.production-job: ${resourceOwner}`).join('\n')}
   nginx:
-    ports: !override
-      - "127.0.0.1::80"
-    volumes:
-${Object.keys(fixtures).map(name => `      - ${JSON.stringify(`${join(directory, name)}:/usr/share/nginx/html/assets/${name}:ro`)}`).join('\n')}
+    labels:
+      pizza.ci.production-check: ${project}
+      pizza.ci.production-job: ${resourceOwner}
+    ports: ${containerNetwork ? '!reset []' : '!override\n      - "127.0.0.1::80"'}
+networks:
+  default:
+    labels:
+      pizza.ci.production-check: ${project}
+      pizza.ci.production-job: ${resourceOwner}
+volumes:
+${['pg_data_prod', 'rabbitmq_data_prod', 'minio_data_prod'].map(volume => `  ${volume}:
+    labels:
+      pizza.ci.production-check: ${project}
+      pizza.ci.production-job: ${resourceOwner}`).join('\n')}
 `)
 const composeArgs = [
   'compose', '--project-name', project,
@@ -60,15 +86,21 @@ const capture = (...args) => run('docker', [...composeArgs, ...args], { capture:
 
 console.log(`Isolated production check: ${project} (temporary configuration: ${directory})`)
 try {
+  const existing = run('docker', ['ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`], { capture: true })
+  assert.equal(existing, '', 'The test project must not already have containers')
+  for (const resource of ['network', 'volume']) {
+    assert.equal(run('docker', [resource, 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`], { capture: true }), '')
+  }
+  ownsProject = true
   compose('config', '--quiet')
   const config = JSON.parse(capture('config', '--format', 'json'))
   assert.equal(config.services.php.build.target, 'prod')
   assert.equal(config.services.php.user, 'www-data')
   assert.equal(config.services.php.volumes?.length || 0, 0)
   assert.equal(config.services.nginx.build.target, 'prod')
-  assert.equal(config.services.nginx.volumes.length, Object.keys(fixtures).length)
-  assert.equal(config.services.nginx.ports.length, 1)
-  assert.equal(config.services.nginx.ports[0].host_ip, '127.0.0.1')
+  assert.equal(config.services.nginx.volumes?.length || 0, 0)
+  assert.equal(config.services.nginx.ports?.length || 0, containerNetwork ? 0 : 1)
+  if (!containerNetwork) assert.equal(config.services.nginx.ports[0].host_ip, '127.0.0.1')
   for (const service of ['postgres', 'redis', 'rabbitmq', 'minio']) {
     assert.equal(config.services[service].ports?.length || 0, 0, service)
   }
@@ -81,6 +113,14 @@ try {
   }
   compose('build', 'php', 'nginx')
   compose('up', '-d', '--no-build', '--wait', '--wait-timeout', '180', 'php', 'nginx')
+  const nginxContainer = capture('ps', '--quiet', 'nginx')
+  for (const name of Object.keys(fixtures)) {
+    run('docker', ['cp', join(directory, name), `${nginxContainer}:/usr/share/nginx/html/assets/${name}`])
+  }
+  if (containerNetwork) {
+    run('docker', ['network', 'connect', `${project}_default`, hostname()])
+    networkAttached = true
+  }
   compose('exec', '-T', 'nginx', 'nginx', '-t')
   compose('exec', '-T', 'nginx', 'sh', '-c', 'test ! -e /usr/share/nginx/html/src && ! command -v node')
   compose('exec', '-T', 'php', 'sh', '-c', 'test ! -e .env && test ! -e auth.json && test ! -e var && test ! -e database/database.sqlite')
@@ -102,8 +142,8 @@ try {
     ]);
     echo json_encode(['token' => app('tymon.jwt.auth')->fromUser($user), 'email' => $user->email]);
   `))
-  const address = capture('port', 'nginx', '80')
-  assert.match(address, /^127\.0\.0\.1:\d+$/)
+  const address = containerNetwork ? 'nginx' : capture('port', 'nginx', '80')
+  if (!containerNetwork) assert.match(address, /^127\.0\.0\.1:\d+$/)
   const testEnvironment = {
     ...environment, PRODUCTION_URL: `http://${address}`, PRODUCTION_FIXTURES: '1',
     PRODUCTION_TEST_TOKEN: fixture.token, PRODUCTION_TEST_USER_EMAIL: fixture.email,
@@ -135,8 +175,32 @@ try {
     assert.ok(!runtimeLogs.includes(secret), 'Runtime logs contain a test secret')
   }
   console.log('PHP logs contain no application errors; test secrets are absent from PHP/Nginx logs')
+  if (exportImages) {
+    const images = ['php', 'nginx'].map(service => ({
+      id: run('docker', ['image', 'inspect', capture('images', '--quiet', service), '--format', '{{.Id}}'], { capture: true }),
+      tag: `${process.env.CI_REGISTRY_IMAGE}/${service}:${process.env.CI_PIPELINE_ID}`,
+    }))
+    for (const { id, tag } of images) {
+      assert.match(id, /^sha256:[a-f0-9]{64}$/)
+      run('docker', ['tag', id, tag])
+    }
+    const reports = join(root, 'reports')
+    mkdirSync(reports, { recursive: true })
+    writeFileSync(join(reports, 'production-images.ids'), images.map(({ id }) => id).join('\n') + '\n')
+    const archive = join(reports, 'production-images.tar')
+    run('docker', ['save', '--output', archive, ...images.map(({ tag }) => tag)])
+    run('gzip', ['-f', archive])
+    console.log('Exported the tested production images without publishing them')
+  }
 } finally {
   // Only resources belonging to our generated project are removed, including its disposable DB.
-  compose('down', '--volumes', '--remove-orphans')
-  rmSync(directory, { recursive: true })
+  try {
+    if (networkAttached) run('docker', ['network', 'disconnect', `${project}_default`, hostname()])
+  } finally {
+    try {
+      if (ownsProject) compose('down', '--volumes', '--remove-orphans')
+    } finally {
+      rmSync(directory, { recursive: true })
+    }
+  }
 }

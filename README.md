@@ -190,8 +190,10 @@ HTTP-запросы ограничены десятью секундами;
 подключение Nginx к PHP — пятью, чтение ответа сохраняет стандартный таймаут Nginx.
 При завершении или ошибке удаляются контейнеры и тома только созданного тестового
 проекта. Основное окружение не останавливается. Собранные образы остаются в Docker.
-Если процесс был принудительно прерван, используйте имя проекта и временные
-env/override-файлы из `/tmp` для очистки только этого стенда.
+При принудительном завершении локального процесса используйте имя проекта
+для очистки только его Docker-ресурсов; CI дополнительно выполняет описанную ниже
+очистку в shell trap и `after_script`. При недоступности daemon или жёстком
+завершении runner автоматическая очистка не гарантируется.
 
 Диагностика:
 
@@ -280,3 +282,199 @@ npm run build
 
 В Docker: `docker compose exec -T frontend npm test` и
 `docker compose exec -T frontend npm run build`.
+
+
+## GitLab CI — этап 12.3, часть 1
+
+Назначение jobs в текущей конфигурации:
+
+| Job | Stage | Назначение |
+|---|---|---|
+| `build` | `build` | Сборка PHP `ci`/`prod`, публикация только CI-образа |
+| `phpstan` | `code-quality` | Composer validation и статический анализ PHP |
+| `php-cs-fixer` | `code-quality` | Проверка форматирования без изменений |
+| `rector` | `code-quality` | Проверка преобразований PHP без изменений |
+| `tests` | `code-quality` | Подготовка сервисов, все PHPUnit suites и JUnit |
+| `frontend` | `code-quality` | Установка по lock-файлу, Vitest и Vite build |
+| `production-config` | `code-quality` | Compose, frontend Docker build и Nginx config |
+| `production-integration` | `production-integration` | Изолированные HTTP-тесты и архив проверенных образов |
+| `publish-production` | `publish` | Проверка архива/IDs и публикация PHP/Nginx |
+
+`build` собирает PHP targets `ci` и `prod`. На этой стадии только CI-образ публикуется в
+`$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID`; все четыре проверочных job получают
+его из Registry с `pull_policy: always` после успешного этапа `build`.
+Production-образ получает локальный тег `php-build-check:$CI_PIPELINE_ID`
+в пространстве проекта и не публикуется. Повторный запуск `build` в том же
+pipeline обновляет его CI-тег; разные pipeline используют разные теги.
+Существующие команды PHP-проверок сохранены.
+
+`build` явно использует публичный `docker:latest`, а не создаваемый CI-образ.
+Начальный порядок stages (`build` → `code-quality`) не позволяет запустить
+проверочные job до успешного завершения публикации. Все job наследуют
+одинаковые job rules. Для передачи CI-образа четырём PHP-job через Registry
+`needs` и `dependencies` не требуются; зависимость artifacts для production
+публикации описана в части 4.
+
+Загрузку `image` выполняет Runner до `before_script`. Для встроенного Registry
+того же проекта он использует credentials, предоставленные GitLab, с
+`CI_JOB_TOKEN`; login в `build.before_script` нужен только для публикации и
+не передаёт авторизацию другим job. Проверьте право пользователя, запустившего
+pipeline, читать Registry и отсутствие конфликтующих credentials для этого
+Registry в `DOCKER_AUTH_CONFIG` или Docker config самого runner. Добавлять
+login в `before_script` проверочных job для загрузки `image` бессмысленно.
+
+Pipeline запускается для merge request (включая draft), push в основную
+ветку (`CI_DEFAULT_BRANCH`) и push в остальные ветки без открытого MR.
+Push в feature-ветку с открытым MR не создаёт второй branch pipeline.
+Tags, schedules, API/trigger и ручной запуск через Run pipeline пока не
+включены. Название основной ветки не захардкожено.
+
+Перед запуском проверьте в GitLab:
+
+- **Settings → General → Visibility, project features, permissions**:
+  Container Registry включён; ограничения Registry разрешают запись CI-образа
+  из branch и MR pipeline.
+- **Settings → CI/CD → Runners** и конфигурацию администратора runner:
+  Docker executor, доступ build job к `/var/run/docker.sock`, разрешённый
+  `pull_policy: always`, доступ job и runner к Registry и Docker Hub.
+  Неназначенные job должны попадать на подходящий runner: проверьте tags,
+  Run untagged jobs и Protected. Для feature/MR одного protected runner
+  может быть недостаточно. DinD эта конфигурация не использует.
+- Runner с host Docker socket должен находиться на выделенном доверенном
+  CI-хосте, отдельно от development/production и их данных. Socket даёт
+  широкие права на хост; запуск недоверенного кода, включая fork MR,
+  на таком runner недопустим. Ограничьте доступ к проекту/runner.
+- Встроенные `CI_REGISTRY`, `CI_REGISTRY_IMAGE`, `CI_REGISTRY_USER`,
+  `CI_REGISTRY_PASSWORD`, `CI_JOB_TOKEN`, `CI_PIPELINE_ID` доступны и не переопределены
+  пользовательскими переменными. Постоянный Registry token не требуется.
+  Вход выполняется через `--password-stdin`; временный Docker config
+  удаляется при обычном завершении job. Не включайте debug trace для
+  проверки credentials.
+- **Build → Pipeline editor → Validate**: проверьте YAML и сценарии branch,
+  MR и основной ветки. Затем подтвердите реальным pipeline, что проверочные
+  job скачивают именно его CI-образ, в том числе на другом runner.
+
+Настройки runner и Registry не хранятся в этом репозитории и должны быть
+подтверждены администратором. Если безопасный socket runner недоступен,
+сначала выберите подходящий способ сборки (например, rootless BuildKit
+с совместимым runner); DinD или передачу образов через artifacts нельзя
+подставлять без проверки условий. VPS, HTTPS и deployment здесь не настраиваются.
+
+
+## GitLab CI — этап 12.3, часть 2
+
+PHPStan job сначала выполняет `composer validate --strict` из `/var/www/app`
+для активного `app/composer.json` и его lock-файла. Обновление зависимостей
+не выполняется.
+
+Test job генерирует временные APP_KEY и JWT_SECRET без вывода значений и
+экспортирует их для Artisan, PHPUnit и дочерних процессов. При отсутствии
+`.env` создаётся пустой файл только внутри CI-контейнера: это устраняет
+предупреждения Dotenv в PHPUnit. Секреты в файл не записываются.
+Не включайте debug trace: отчёты и диагностические сообщения сторонних
+инструментов тоже могут содержать чувствительные данные.
+
+`docker/ci/wait-services.php` запускается из checkout после загрузки CI-образа.
+Он проверяет подключение к PostgreSQL с тестовыми credentials, AMQP-авторизацию
+RabbitMQ и доступ к S3-бакету MinIO. Отсутствующий бакет создаётся и повторно
+проверяется до запуска тестов; отдельного фонового `minio-mc` больше нет.
+Ошибка подготовки завершает job ненулевым кодом. Ожидание каждого сервиса
+ограничено `CI_SERVICE_WAIT_TIMEOUT` (по умолчанию 120 секунд, допустимо 1–600),
+плюс время завершения текущей операции с сетевыми таймаутами 5 секунд.
+Сообщения исключений не печатаются, чтобы не раскрыть credentials.
+
+`app/phpunit.xml` включает Feature, Integration и Unit. PHPUnit JUnit XML
+пишется в `$CI_PROJECT_DIR/reports/phpunit.xml`; GitLab сохраняет его как
+JUnit report и обычный artifact с `when: always`, включая падение тестов.
+Если подготовка окружения не дошла до PHPUnit, XML не создаётся.
+Локальная генерация XML не подтверждает его загрузку сервером GitLab.
+
+
+## GitLab CI — этап 12.3, часть 3
+
+Job `frontend` использует Node 24, выполняет `npm ci --no-audit --no-fund`
+по `frontend/package-lock.json`, существующие Vitest-тесты (`npm test`) и
+production-сборку Vite (`npm run build`). `VITE_API_BASE_URL=/api` соответствует
+production Dockerfile. Новых зависимостей и тестовых фреймворков нет.
+
+Job `production-config` проверяет базовый, frontend и production Compose
+через `config --quiet`, используя только корневой `.env` и явно заданные
+публичные тестовые значения. `.env.local` и production-секреты не нужны.
+Затем собирается frontend Docker target `prod` с локальным тегом
+`$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID` и выполняется
+`nginx -t` внутри полученного образа. Образ не публикуется; контейнер проверки
+не имеет сети, опубликованных портов или подключённых томов и удаляется
+после завершения. Проверка не запускает сервисы Compose и не меняет их данные.
+Docker-сборка дополнительно подтверждает упаковку Vite-результата и Nginx
+конфигурации, поэтому не заменяется одной сборкой Vite на Node.
+
+Оба job наследуют общие job rules и выполняются на стадии `code-quality`
+после успешного `build`. Они явно используют собственные публичные образы,
+а четыре PHP-job продолжают получать опубликованный CI-образ. Для
+`production-config` нужен тот же безопасный доступ к Docker socket, что и
+для `build`, и Compose с поддержкой `!reset`. HTTP-интеграция и публикация production-образов выполняются отдельными
+стадиями части 4, описанными ниже.
+
+
+## GitLab CI — этап 12.3, часть 4
+
+Порядок стадий: `build` → `code-quality` → `production-integration` → `publish`.
+Все job сохраняют общие workflow/job rules. Публикация разрешена только после
+успеха всех предыдущих стадий; `needs` не используется. Job `publish-production`
+скачивает artifacts только из `production-integration` через `dependencies`,
+что не отменяет порядок stages.
+
+Integration job использует существующий Node HTTP-сценарий в небольшом
+служебном образе Node 24 + Docker CLI/Compose. Checkout передаётся через
+`git archive HEAD` и stdin, без bind mount каталогов runner. Файлы canary
+передаются в тестовый Nginx через `docker cp`. Проверяющий контейнер дополнительно подключается
+к случайно названной сети проверочного Compose-проекта; запросы идут
+на `http://nginx` внутри этой сети. Порты тестового приложения не публикуются.
+Новые БД, credentials и volumes не связаны с development/production.
+Запускаются только тестовые PHP/Nginx и их инфраструктурные зависимости,
+без production workers/scheduler.
+
+Проверяются SPA/assets/cache, API query/body/headers/Authorization и JSON-ошибки,
+затем недоступность PHP и восстановление после его пересоздания без перезапуска
+Nginx. После успешных проверок `docker save` сохраняет именно проверенные
+PHP/Nginx-образы в `reports/production-images.tar.gz`, вместе с их IDs и checksum.
+Архив сжат gzip. Лимит размера artifacts в GitLab должен вмещать этот архив;
+проверьте доступную квоту перед запуском. Локально получен архив около 272 MiB;
+лимит должен превышать фактический размер с запасом. Для artifacts задан
+`expire_in: 1 day`; фактическое удаление зависит также от настроек GitLab.
+Если архив уже удалён, повторная публикация требует повторного выполнения
+интеграционного job. Изображения контейнеров с runtime-конфигурацией
+не экспортируются. Секреты и тестовые данные не включаются в архив образов.
+
+Publish job проверяет checksum, загружает архив без пересборки, сравнивает IDs
+и публикует `$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID` и
+`$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID`. Теги связывают образы с pipeline;
+`latest` не публикуется. Публикация выполняется для всех разрешённых workflow
+pipeline, включая MR, при достаточных правах Registry. Два push не атомарны:
+при ошибке второго job падает и может быть повторён с теми же artifacts.
+
+Node `finally` удаляет свой стенд. Shell trap и `after_script` дополнительно
+очищают только контейнеры/сети/volumes случайного проекта из state-файла,
+имеющие дополнительные labels этого проекта и текущего CI-job;
+служебный контейнер проверяется по ID и label текущего CI-job. State-файлы
+не содержат credentials. При обычных ошибках и поддерживаемой отмене job
+очистка выполняется; после SIGKILL всего runner или потери Docker daemon
+может потребоваться ручная очистка по сохранённому имени проекта.
+Собранные образы остаются в Docker. Подготовка не запускает реальный production.
+
+Требуются выделенный доверенный socket runner, Git, Node/Docker базовые образы
+и Compose с поддержкой `!reset` и `!override`. VPS и deployment не настраиваются.
+
+На момент завершения локальной реализации реальный GitLab pipeline,
+Registry login/push и загрузка/скачивание artifacts через GitLab не проверены.
+Локальные проверки YAML, shell, Docker, PHPUnit, frontend и HTTP подтверждают
+только локальный результат, а не работоспособность серверного CI/CD.
+Для подтверждения этапа в GitLab необходимо проверить настройки выше,
+успешное получение CI-образа, передачу архива между job и наличие обоих
+production-тегов своего pipeline в Registry.
+
+`reports/` содержит генерируемые XML, архивы, checksum/IDs и state-файлы;
+каталог исключён из Git и backend Docker-контекста. Frontend Docker-контекст
+ограничен `frontend/`, где зависимости, dist и coverage исключены отдельно.
+Временные test.env/override создаются через `mkdtemp` в системном временном
+каталоге и удаляются сценарием; в репозиторий их копировать не следует.

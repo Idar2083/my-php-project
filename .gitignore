@@ -15,3 +15,5 @@ bootstrap/cache/*.php
 # Local agent tooling
 /.agents/
 /.codex/
+# Generated CI reports and image archives
+/reports/
