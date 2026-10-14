@@ -37,13 +37,15 @@ jwt-secret:
 
 up-prod:
 	docker compose --env-file .env --env-file .env.local \
-    	-f docker-compose.prod.yml up -d --build --remove-orphans
+		-f docker-compose.yml -f docker-compose.prod.yml up -d --build --remove-orphans
 
 down-prod:
-	docker compose -f docker-compose.prod.yml down -v
+	docker compose --env-file .env --env-file .env.local \
+		-f docker-compose.yml -f docker-compose.prod.yml down
 
 logs-prod:
-	docker compose -f docker-compose.prod.yml logs -f
+	docker compose --env-file .env --env-file .env.local \
+		-f docker-compose.yml -f docker-compose.prod.yml logs -f
 
 cs:
 	cd app && vendor/bin/php-cs-fixer fix

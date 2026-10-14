@@ -56,4 +56,27 @@ describe('catalog API', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => { throw new SyntaxError('Invalid JSON') } }))
     await expect(fetchProducts()).rejects.toThrow('Invalid JSON')
   })
+
+  it('accepts an empty page beyond the last available page', () => {
+    const page = productPage([], { current_page: 2, total: 30 })
+    expect(parseProductPage(page)).toEqual({ products: [], meta: page.meta })
+  })
+
+  it.each([
+    { per_page: 0 }, { per_page: '30' }, { total: -1 },
+    { total: Number.MAX_SAFE_INTEGER + 1 }, { current_page: 1.5 },
+    { last_page: 2 }, { total: 31 },
+  ])('rejects invalid or inconsistent metadata: %j', (meta) => {
+    expect(() => parseProductPage(productPage([], meta))).toThrow('Некорректный ответ каталога')
+  })
+
+  it.each([
+    productPage([], { total: 30 }),
+    productPage([product], { total: 0 }),
+    productPage([product], { current_page: 2 }),
+    productPage([product, { ...product, id: 8 }], { per_page: 1 }),
+  ])('rejects data contradicting pagination metadata', (page) => {
+    expect(() => parseProductPage(page)).toThrow('Некорректный ответ каталога')
+  })
+
 })

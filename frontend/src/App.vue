@@ -19,8 +19,20 @@ async function load(page = requestedPage.value) {
   timer = setTimeout(() => request.abort(), 10000)
 
   try {
-    const result = await fetchProducts(page, request.signal)
-    if (controller !== request) return
+    let result = await fetchProducts(page, request.signal)
+    if (controller !== request || request.signal.aborted) return
+    if (result.meta.current_page !== page) throw new Error('Некорректная страница каталога')
+
+    // Recover once when products were removed; never loop on a changing catalog.
+    if (result.meta.total > 0 && result.meta.current_page > result.meta.last_page) {
+      requestedPage.value = result.meta.last_page
+      result = await fetchProducts(requestedPage.value, request.signal)
+      if (controller !== request || request.signal.aborted) return
+      if (result.meta.current_page !== requestedPage.value ||
+        (result.meta.total > 0 && result.meta.current_page > result.meta.last_page)) {
+        throw new Error('Некорректная страница каталога')
+      }
+    }
     products.value = result.products
     meta.value = result.meta
     status.value = products.value.length ? 'success' : 'empty'

@@ -29,6 +29,8 @@ phpstan.neon
 
 /storage/*.key
 /storage/pail
+# Generated OpenAPI JSON; keep documentation sources tracked.
+/storage/api-docs/api-docs.json
 
 /vendor
 

@@ -20,16 +20,70 @@
 
 ## Setup
 
+Корневой `.env` уже хранится в репозитории и содержит общие настройки без
+секретных значений. Сохраните его. Локальные значения задайте в `.env.local`,
+который игнорируется Git. Следующие команды создают файлы только при их отсутствии:
+
 ```bash
-cp .env.example .env
-cp .env.example .env.local
+[ -e .env.local ] || (umask 077; touch .env.local)
+[ -e app/.env ] || (umask 077; cp app/.env.example app/.env)
 ```
 
-Запустить проект:
+Перед первым запуском заполните корневой `.env.local`:
+
+- `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`,
+  `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` — локальные учётные данные сервисов.
+- `JWT_SECRET` — случайный секрет JWT. Не используйте тестовые ключи.
+- Остальные параметры берутся из корневого `.env`: `POSTGRES_DB`, `POSTGRES_USER`,
+  `MINIO_BUCKET`, `PRODUCTS_CACHE_TTL` и опубликованные порты. Меняйте их локально
+  только при необходимости; `FRONTEND_PORT` и `VITE_API_BASE_URL` имеют значения
+  по умолчанию 5173 и `/api`.
+
+Development PHP читает `app/.env` через bind mount. Его `APP_KEY` нужно сгенерировать
+после установки Composer-зависимостей. JWT и подключения к PostgreSQL, Redis и
+RabbitMQ передаются из Compose; дублировать их в `app/.env` не требуется.
+Для S3/отчётов задайте в `app/.env` `AWS_ACCESS_KEY_ID` и `AWS_SECRET_ACCESS_KEY`
+равными локальным MinIO credentials, а `AWS_BUCKET` — `MINIO_BUCKET`;
+`AWS_ENDPOINT=http://minio:9000` и path-style уже заданы в шаблоне.
+Не добавляйте эти локальные файлы и секреты в Git.
+
+Для первого запуска сначала запустите только PHP и его зависимости
+(PostgreSQL, Redis, RabbitMQ и MinIO), затем установите Composer-зависимости:
 
 ```bash
+docker compose --env-file .env --env-file .env.local up -d --build --wait php
+make composer-install
+```
+
+На этом шаге Nginx и frontend не запускаются. Healthcheck PHP проверяет PHP-FPM
+и не требует `APP_KEY` или установленной схемы БД.
+
+**Только если `APP_KEY` в `app/.env` пуст**, сгенерируйте ключ следующей командой.
+Если ключ уже задан, пропустите её: `key:generate` может заменить существующий ключ.
+
+```bash
+docker compose --env-file .env --env-file .env.local exec -T php php artisan key:generate
+```
+
+Для нового окружения создайте схему БД, затем запустите проект целиком:
+
+```bash
+docker compose --env-file .env --env-file .env.local exec -T php php artisan migrate
 make up
 ```
+
+Теперь `APP_KEY` задан до запуска Nginx и frontend, который ожидает healthy Nginx.
+Товары добавляются через существующий admin API. Для последующих запусков уже
+подготовленного окружения достаточно `make up`.
+
+Production-команды `make up-prod`, `make down-prod` и `make logs-prod` используют
+`docker-compose.yml` вместе с `docker-compose.prod.yml`. Обычная остановка сохраняет
+тома. Для production дополнительно задайте в корневом `.env.local` `APP_KEY`,
+`DB_CONNECTION`, `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`.
+Для контейнерного PostgreSQL используйте `DB_HOST=postgres`, `DB_PORT=5432` и
+согласуйте имя БД, пользователя и пароль с `POSTGRES_DB`, `POSTGRES_USER`,
+`POSTGRES_PASSWORD`. `APP_KEY` имеет формат Laravel `base64:...`; храните его вне Git.
+Frontend profile предназначен для development и production-командами не включается.
 
 После запуска приложение будет доступно по адресу:
 

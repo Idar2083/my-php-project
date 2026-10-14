@@ -8,9 +8,14 @@ export function parseProductPage(document) {
   const meta = document?.meta
   if (
     !Array.isArray(document?.data) ||
-    !Number.isInteger(meta?.current_page) || meta.current_page < 1 ||
-    !Number.isInteger(meta?.last_page) || meta.last_page < 1 ||
-    !Number.isInteger(meta?.total) || meta.total < 0 ||
+    !Number.isSafeInteger(meta?.current_page) || meta.current_page < 1 ||
+    !Number.isSafeInteger(meta?.last_page) || meta.last_page < 1 ||
+    !Number.isSafeInteger(meta?.total) || meta.total < 0 ||
+    !Number.isSafeInteger(meta?.per_page) || meta.per_page < 1 ||
+    meta.last_page !== Math.max(1, Math.ceil(meta.total / meta.per_page)) ||
+    document.data.length > Math.min(meta.total, meta.per_page) ||
+    (meta.current_page > meta.last_page && document.data.length > 0) ||
+    (meta.total > 0 && meta.current_page <= meta.last_page && document.data.length === 0) ||
     !document.data.every((product) =>
       product && Number.isInteger(product.id) &&
       typeof product.name === 'string' &&
