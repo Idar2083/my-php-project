@@ -21,3 +21,15 @@ app/.env.*
 
 # Frontend has its own Docker build context.
 frontend
+
+# Local runtime data and tooling must not enter backend images.
+app/storage/**
+!app/storage/**/.gitignore
+app/database/*.sqlite
+app/.phpunit.cache
+app/.phpunit.result.cache
+app/var
+app/auth.json
+.agents
+.codex
+.aws

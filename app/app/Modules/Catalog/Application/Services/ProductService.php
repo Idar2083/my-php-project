@@ -12,7 +12,7 @@ class ProductService
 {
     private const string CACHE_VERSION_KEY = 'products.version';
 
-    private const string CACHE_KEY_PREFIX = 'products';
+    private const string CACHE_KEY_PREFIX = 'products.attributes';
 
     /**
      * @return LengthAwarePaginator<int, Product>
@@ -22,7 +22,7 @@ class ProductService
         $cacheKey = $this->buildCacheKey($page);
 
         /** @var array{
-         *      items: array<int, Product>,
+         *      items: array<int, array<string, mixed>>,
          *      total: int,
          *      current_page: int,
          *      per_page: int
@@ -42,7 +42,10 @@ class ProductService
                     );
 
                 return [
-                    'items' => $paginator->items(),
+                    'items' => array_map(
+                        static fn (Product $product): array => $product->getAttributes(),
+                        $paginator->items(),
+                    ),
                     'total' => $paginator->total(),
                     'current_page' => $paginator->currentPage(),
                     'per_page' => $paginator->perPage(),
@@ -51,7 +54,7 @@ class ProductService
         );
 
         return new \Illuminate\Pagination\LengthAwarePaginator(
-            items: $cached['items'],
+            items: Product::hydrate($cached['items']),
             total: $cached['total'],
             perPage: $cached['per_page'],
             currentPage: $cached['current_page'],

@@ -7,7 +7,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:production": "node --test tests-production/http.test.js",
+    "test:production:backend-down": "node --test tests-production/backend-down.test.js",
+    "test:production:isolated": "node tests-production/run.js"
   },
   "dependencies": { "vue": "3.5.44" },
   "devDependencies": {
