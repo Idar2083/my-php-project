@@ -87,13 +87,11 @@ services:
       dockerfile: docker/php/Dockerfile
       target: prod
     command:
-      - /bin/sh
-      - -c
-      - |
-        while true; do
-          php artisan outbox:process
-          sleep 60
-        done
+      - php
+      - artisan
+      - outbox:process
+      - --worker
+    stop_grace_period: 70s
     environment:
       <<: *app-production-environment
     restart: unless-stopped
@@ -115,8 +113,8 @@ services:
       target: prod
     command:
       - php
-      - artisan
-      - schedule:work
+      - /usr/local/bin/scheduler.php
+    stop_grace_period: 70s
     environment:
       <<: *app-production-environment
     restart: unless-stopped

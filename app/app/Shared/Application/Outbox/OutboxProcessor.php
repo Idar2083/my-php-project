@@ -17,10 +17,10 @@ final readonly class OutboxProcessor
     ) {
     }
 
-    public function process(): int
+    public function process(int $limit = self::BATCH_SIZE): int
     {
         $events = $this->repository->claimPending(
-            self::BATCH_SIZE,
+            $limit,
         );
 
         foreach ($events as $event) {

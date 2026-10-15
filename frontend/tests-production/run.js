@@ -124,6 +124,7 @@ try {
   compose('exec', '-T', 'nginx', 'nginx', '-t')
   compose('exec', '-T', 'nginx', 'sh', '-c', 'test ! -e /usr/share/nginx/html/src && ! command -v node')
   compose('exec', '-T', 'php', 'sh', '-c', 'test ! -e .env && test ! -e auth.json && test ! -e var && test ! -e database/database.sqlite')
+  compose('exec', '-T', 'php', 'php', '-r', 'exit(extension_loaded("pcntl") && function_exists("pcntl_async_signals") ? 0 : 1);')
   // These migrations and fixtures can only reach this randomly named project's new PostgreSQL volume.
   compose('exec', '-T', 'php', 'php', 'artisan', 'migrate', '--force')
   const fixture = JSON.parse(capture('exec', '-T', 'php', 'php', '-r', `

@@ -218,6 +218,240 @@ http://localhost:8080
 
 (или через значение `NGINX_PORT` в `.env.local`)
 
+## Release manifest и запуск готовых образов
+
+`docker-compose.release.yml` применяется **третьим**, после `docker-compose.yml`
+и `docker-compose.prod.yml`. Это отдельный режим: существующий `make up-prod`
+по-прежнему собирает исходники и для запуска release-образов не подходит.
+Release overlay удаляет development-сервис `frontend` даже при включённых profiles,
+убирает `build` у всех пяти прикладных сервисов и задаёт обязательные `PHP_IMAGE`
+и `NGINX_IMAGE`. PHP, report-worker, outbox-worker и report-scheduler получают
+одну ссылку `PHP_IMAGE`; Nginx получает `NGINX_IMAGE`.
+Volumes, сети, команды, environment, healthchecks и зависимости остальных
+сервисов наследуются без изменений. Инфраструктурные образы пока сохраняют
+существующие теги; manifest фиксирует только два прикладных образа.
+
+Формат JSON manifest v1:
+
+| Поле | Значение |
+|---|---|
+| `schema_version` | Число `1` |
+| `git_sha` | Полный Git SHA исходников проверенных образов, 40 lowercase hex |
+| `pipeline_id` | Положительный GitLab pipeline ID как строка |
+| `deployment_config.version` | Число `1`, версия контракта release Compose |
+| `deployment_config.git_sha` | Тот же SHA; Compose-файлы нужно брать из этого коммита |
+| `images.php` | Полная ссылка `<CI_REGISTRY_IMAGE>/php@sha256:<64 hex>` |
+| `images.nginx` | Полная ссылка `<CI_REGISTRY_IMAGE>/nginx@sha256:<64 hex>` |
+
+Обе ссылки должны принадлежать одному Registry project. Теги, локальные image IDs,
+credentials в URL и неизвестные поля отклоняются. Секреты, домен, runtime environment
+и Docker credentials в manifest не входят. Это описание формата, а не manifest
+существующего production-релиза.
+
+Существующий CI публикует `php:$CI_PIPELINE_ID` и `nginx:$CI_PIPELINE_ID` после
+проверки экспортированных образов. После **успешной публикации обоих образов**
+следует получить их Registry manifest digests и передать полные ссылки как
+`PHP_IMAGE`/`NGINX_IMAGE`. Локальный `.Id` из `production-images.ids` — не Registry
+digest. Нельзя подменять ссылки на digest тегами, даже тегом pipeline.
+Генерация manifest пока не подключена к CI; publish/workflow rules не изменены.
+
+Утилита требует Node.js 24+ там, где создаётся/проверяется manifest.
+Задайте `RELEASE_MANIFEST` и `RELEASE_ENV` как пути к выбранным файлам.
+Сценарии ниже выполняются в отдельном shell-блоке с `set -eu`: ошибка любой
+обязательной команды завершает блок ненулевым кодом. Не продолжайте работу
+с Compose после ошибки и не объединяйте сценарии как попытку fallback.
+
+Создание нового manifest:
+
+```bash
+(
+  set -eu
+  : "${RELEASE_MANIFEST:?Set a new manifest path}" "${RELEASE_ENV:?Set a new env path}"
+  # CI_COMMIT_SHA, CI_PIPELINE_ID, PHP_IMAGE, NGINX_IMAGE заданы вызывающей стороной.
+  node docker/release/manifest.mjs create "$RELEASE_MANIFEST"
+  node docker/release/manifest.mjs validate "$RELEASE_MANIFEST"
+  node docker/release/manifest.mjs export-env "$RELEASE_MANIFEST" "$RELEASE_ENV"
+)
+```
+
+Проверка и экспорт уже существующего manifest (только осознанно выбранного):
+
+```bash
+(
+  set -eu
+  : "${RELEASE_MANIFEST:?Set the existing manifest path}" "${RELEASE_ENV:?Set a new env path}"
+  node docker/release/manifest.mjs validate "$RELEASE_MANIFEST"
+  node docker/release/manifest.mjs export-env "$RELEASE_MANIFEST" "$RELEASE_ENV"
+)
+```
+
+`export-env` повторно читает и валидирует manifest, записывает полный env-файл
+с правами `0600` во временный каталог рядом с итоговым файлом, закрывает и
+синхронизирует запись, затем публикует файл атомарным hard link без перезаписи.
+Существующий файл, каталог или symlink на месте `RELEASE_ENV` приводит к ошибке.
+Временный каталог удаляется при обычном успехе и исключениях. Нужна поддержка
+hard links файловой системой каталога назначения (обычная Linux filesystem);
+если публикация невозможна, команда завершается ненулевым кодом, без fallback.
+Не используйте shell-перенаправление команды `env` для создания release.env.
+После SIGKILL или потери питания может остаться временный каталог; итоговый
+файл при этом либо отсутствует, либо содержит полностью подготовленные данные.
+
+Manifest создаётся эксклюзивно, без времени генерации и произвольных env-полей.
+Повторное создание по существующему пути завершается ошибкой. Это защита утилиты
+от перезаписи, не подпись и не серверная защита релиза от изменения. Валидатор
+проверяет структуру, но не обращается к Registry и не доказывает происхождение
+образов. Связь digest с проверенными образами и SHA должен обеспечить publish job
+при последующем подключении генерации. Сохраняйте manifest вместе с тремя
+Compose-файлами из `deployment_config.git_sha`; формат версии 1 предполагает
+одинаковую архитектуру сервера и опубликованных образов.
+
+Для одного только Compose Node.js не нужен: используется подготовленный
+несекретный `release.env`. Команды состояния ниже требуют Node.js 24+ на сервере.
+Не добавляйте в release.env runtime credentials. Для проверки
+конфигурации без вывода значений секретов:
+
+```bash
+# Shell environment имеет приоритет над --env-file; исключаем подмену версии.
+unset PHP_IMAGE NGINX_IMAGE
+COMPOSE_PROFILES= docker compose --env-file .env --env-file .env.local \
+  --env-file /path/to/release.env \
+  -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.release.yml \
+  config --quiet
+```
+
+Во всех последующих операциях используйте те же env-файлы, три Compose-файла
+и постоянный `COMPOSE_PROJECT_NAME`. Compose сам не проверяет синтаксис digest:
+не используйте произвольный release.env вместо вывода валидатора. Получение образов
+выполняется через `pull`, запуск — через `up --no-build`; команды `build` и
+`make up-prod` в этом режиме не используются. Исходники `app/` и `frontend/`
+на сервере не нужны. Runtime credentials остаются в отдельно подготовленном
+закрытом `.env.local`, не в manifest и не в artifacts.
+
+Порядок первоначальной инициализации из раздела Production сохраняется: получение
+образов вместо сборки, PHP с зависимостями, MinIO init, согласованные миграции,
+затем остальные сервисы. Миграции выполняются в `php`, следовательно используют
+тот же закреплённый образ; автоматически они не запускаются. Этот overlay
+не реализует SSH-deploy, rollback, TLS или deploy-job. Отдельные backup-команды описаны ниже.
+
+Проверки без запуска контейнеров, миграций, Registry и локальных env-файлов:
+
+```bash
+node --test docker/release/release.test.mjs
+```
+
+Тесты проверяют manifest/CLI, запрет перезаписи и раскрытия входных данных при
+ошибках, отсутствие build/frontend в объединённом Compose (даже с profiles `*`),
+одинаковый PHP digest и сохранение остальных production-настроек. Используются
+только публичные fixtures и временные каталоги; Docker daemon не требуется.
+
+## Состояние релизов и проверка перед deploy
+
+`docker/release/release.sh` поддерживает read-only `status` и `check`, а также
+описанные ниже `accept-backup` и `mark-migrating` для фиксации состояния backup.
+Команды `status` и `check` не создают/изменяют состояние, не скачивают образы, не запускают
+и не останавливает сервисы, не выполняет миграции или переключение версии.
+Нужны Linux, Node.js 24+, util-linux `flock`, а для `check` — Docker CLI/Compose.
+Docker daemon, SSH и Registry для проверки конфигурации не требуются.
+
+Каталог состояния должен быть заранее подготовлен и закрыт от посторонней записи
+(рекомендуются `0700` для каталога и `0600` для state.json). Его нельзя удалять,
+заменять или копировать в другое место во время операций: блокировка привязана
+к inode каталога. Все будущие операции записи должны использовать этот же каталог
+и протокол блокировки. Несогласованный каталог состояния означает отказ, не
+автоматическую инициализацию или восстановление из временных файлов.
+
+Формат `state.json` v1:
+
+| Поле | Содержание |
+|---|---|
+| `schema_version` | `1` |
+| `project` | Постоянное имя Compose project; при существующей установке — её фактическое имя |
+| `revision` | Неотрицательное целое, увеличивается при переходе |
+| `current`, `previous` | Полные проверенные manifest успешных релизов либо `null` |
+| `operation` | `{ "manifest": ..., "phase": ... }` либо `null` |
+
+Начальное состояние формируется библиотекой `initialState(project)`:
+revision 0, current/previous/operation равны null. Его явная регистрация через
+`persist(directory, null, state)` допустима только для новой установки, под
+блокировкой; готовой команды инициализации пока нет. Существующую установку
+нельзя регистрировать как пустую: сначала нужно установить её реальный project
+и релиз. Отсутствующий, повреждённый или неподдерживаемый state.json даёт ошибку.
+
+Идентичность релиза — SHA-256 нормализованных значений всех полей manifest,
+включая оба image digest. Тот же pipeline ID с изменённым manifest конфликтует
+с сохранённым релизом. Незавершённая операция допускает только свой manifest.
+Другой релиз не может молча продолжить её; автоматического recovery нет.
+
+Библиотека допускает последовательные фазы:
+
+```text
+prepared → images_ready → quiescing → quiesced → backup_ready
+         → migrating → migrated → starting → verified → committed
+```
+
+Это модель будущего deploy, а не реализация этих действий. `begin` того же
+текущего релиза или той же операции не меняет состояние. Пропуск фаз, смена
+manifest в операции и неявный возврат previous запрещены. Commit обновляет
+current/previous и завершает operation одной записью. Фазы не доказывают,
+что соответствующие действия действительно выполнены: будущий orchestrator
+обязан проверять реальные сервисы и БД перед переходом. Полного журнала событий
+и процедуры восстановления данных в этом шаге нет.
+
+Запись библиотеки `persist` требует открытого read-only FD 9 на каталог состояния
+и эксклюзивной `flock` на нём. Она проверяет ожидаемое старое состояние, допустимый
+следующий переход и неизменность project. Новый JSON записывается и синхронизируется
+в закрытом временном каталоге рядом с state.json. Первая регистрация использует
+hard link без перезаписи; обновление — атомарный rename, затем fsync каталога.
+При обычной ошибке до публикации старые current/previous остаются целыми.
+После SIGKILL возможен временный каталог; он не считается состоянием и не
+восстанавливается автоматически. Ошибка fsync после rename означает неопределённый
+результат подтверждения записи: сначала нужно перечитать состояние, а не повторять
+переход вслепую. Требуется filesystem с соответствующими Linux-семантиками.
+
+Команды (аргументы-пути должны указывать на заранее подготовленные файлы):
+
+```bash
+sh docker/release/release.sh status /path/to/state-directory
+sh docker/release/release.sh check /path/to/state-directory \
+  /path/to/release.json /path/to/compose-bundle /path/to/runtime.env
+```
+
+Обе команды берут неблокирующую эксклюзивную flock; конкурирующая операция
+завершается ненулевым кодом без ожидания и без записи файлов. `status` выводит
+только project, revision, идентификаторы current/previous и текущую фазу.
+`check` проверяет manifest и совместимость с состоянием, затем выполняет только
+`docker compose config --format json`, удерживая вывод в памяти. Bundle содержит
+корневой публичный `.env` и три Compose-файла из коммита manifest; runtime.env
+передаётся отдельно и содержит закрытые настройки. Compose project берётся
+из состояния через явный `--project-name`, а ссылки на образы — из manifest,
+с приоритетом над shell/env-файлами. Проверяются отсутствие build, frontend
+и bind mounts, точные прикладные образы и production environment PHP.
+Содержимое конфигурации и ошибки Docker не выводятся: они могут содержать секреты.
+
+Дочерний Compose получает только явный список переменных окружения:
+`PATH`, `HOME`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR` для поиска CLI/config;
+`DOCKER_CONFIG`, `DOCKER_CONTEXT`, `DOCKER_HOST`, `DOCKER_API_VERSION`, `DOCKER_TLS`,
+`DOCKER_TLS_VERIFY`, `DOCKER_CERT_PATH`, `SSH_AUTH_SOCK` для конфигурации подключения;
+`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` и их lowercase-варианты, `SSL_CERT_FILE`,
+`SSL_CERT_DIR` для proxy/CA. Значения не печатаются. Другие shell-переменные,
+включая `DB_*`, `APP_*`, переменные портов и произвольные `COMPOSE_*`, не наследуются.
+`COMPOSE_PROFILES` принудительно пуст, `PHP_IMAGE`/`NGINX_IMAGE` берутся из manifest.
+Приоритет runtime.env над публичным bundle/.env сохраняется. Настройки приложения
+нужно задавать в этих файлах; ссылки на посторонние shell-переменные внутри них
+не поддерживаются. Окружение самого Node/shell и доверенный PATH эта фильтрация
+не изолирует; она относится только к дочернему процессу Compose.
+
+`check` не проверяет доступность образов, их происхождение, здоровье сервера,
+backup, совместимость миграций или побайтовое соответствие bundle Git SHA.
+Успешная проверка не означает разрешение или выполнение deploy. Установленные
+в production volumes и сети эти команды не меняют.
+
+Безопасные тесты (fixtures, fake Docker и Compose config; без daemon/Registry):
+
+```bash
+node --test docker/release/release.test.mjs docker/release/deploy.test.mjs
+```
+
 ## Useful commands
 
 ```bash
@@ -472,6 +706,334 @@ Registry login/push и загрузка/скачивание artifacts чере�
 Для подтверждения этапа в GitLab необходимо проверить настройки выше,
 успешное получение CI-образа, передачу архива между job и наличие обоих
 production-тегов своего pipeline в Registry.
+
+### Корректное завершение queue worker
+
+Production-стадия PHP Dockerfile устанавливает `pcntl` и проверяет расширение
+при сборке. Worker entrypoint проверяет его до настройки RabbitMQ, затем через
+`exec` запускает Laravel worker без shell между ним и Docker. PHP-FPM entrypoint
+и StopSignal не меняются: у проверенного локального исходного образа это SIGQUIT.
+Laravel Worker обрабатывает SIGQUIT и SIGTERM, завершает текущую задачу и выходит.
+Наличие `pcntl` также включает штатный timeout Laravel worker (по умолчанию 60 с).
+
+Без Docker и подключения к очередям можно проверить настоящий Laravel Worker
+с очередью в памяти и контролируемой задачей (нужны PHP с pcntl и app/vendor):
+
+```sh
+node --test docker/release/queue-worker.test.mjs
+```
+
+Тест посылает сигнал во время задачи, разрешает ей завершиться только после
+регистрации сигнала и проверяет подтверждение задачи, exit code 0 и отсутствие
+запуска второй задачи. Бюджет завершения — 10 секунд, текущий Compose default;
+это тестовый предел, а не подтверждение достаточности для реальных отчётов.
+Увеличение production grace period требует отдельной оценки длительности задач.
+
+Отдельный opt-in тест требует локального Docker daemon на
+`unix:///var/run/docker.sock` и **уже пересобранного production-образа**.
+Передайте его локальный неизменяемый image ID через переменную
+`QUEUE_WORKER_TEST_IMAGE`; теги не принимаются. Например, после отдельной сборки:
+
+```sh
+docker build --pull=false --target prod -f docker/php/Dockerfile -t pizza-queue-signal-check:local .
+QUEUE_WORKER_TEST_IMAGE="$(docker image inspect pizza-queue-signal-check:local --format '{{.Id}}')" \
+  node --test docker/release/queue-worker-image.test.mjs
+```
+
+Сборка может требовать доступных зависимостей; эти команды не являются deploy.
+Без переменной три image-теста пропускаются. Они проверяют SIGQUIT, SIGTERM и
+обычный Docker stop с унаследованным SIGQUIT, PHP как PID 1, отсутствие SIGKILL/OOM
+и завершение за 10 секунд. Создаётся только изолированный контейнер без сети,
+production volumes и env-файлов; образ не скачивается (`--pull=never`). Тест
+удаляет только собственный контейнер с проверенной уникальной меткой.
+Запускается fixture напрямую, без production entrypoint, Laravel bootstrap,
+RabbitMQ и реальных данных. Проверка pcntl также добавлена в существующий
+production integration runner; сам runner запускает отдельную БД и миграции,
+поэтому для проверки только сигналов используйте команды выше.
+
+Эти тесты не подтверждают доставку/ack RabbitMQ, сохранность файлов отчётов,
+достаточность grace period для настоящих задач или поведение при SIGKILL.
+Остановка outbox и scheduler описана отдельно ниже; полный deploy не реализован.
+
+### Остановка outbox и scheduler
+
+Production outbox запускается как `php artisan outbox:process --worker`.
+После `exec` в production entrypoint PHP является PID 1. SIGQUIT (унаследованный
+StopSignal), SIGTERM и SIGINT запрещают следующий claim, но не прерывают текущий
+listener и последующий `markPublished`/`markFailed`. Worker забирает по одному
+событию: до 100 за цикл, затем пауза 60 секунд, прерываемая сигналом. Разовая
+`outbox:process` без флага сохраняет прежний batch size 100. Цена более точной
+остановки — отдельная claim-транзакция на событие. Сигнал во время уже начатого
+claim не отменяет эту операцию; полученное единственное событие завершается.
+
+Scheduler запускается через `/usr/local/bin/scheduler.php` вместо `schedule:work`.
+Supervisor как PID 1 запускает foreground `schedule:run` на следующей минутной
+границе, без параллельных запусков и catch-up пропущенных минут. Во время остановки
+новых `schedule:run` не будет; текущий invocation и его foreground потомки
+получают возможность закончить. Сигнал им намеренно не пересылается: Laravel
+может завершить Event при сигнале, освободив mutex до завершения задачи.
+Supervisor использует отдельную POSIX session/process group и reaping потомков.
+Нужны pcntl и posix; сборка проверяет их наличие. PHP-FPM StopSignal не изменён.
+
+Это решение рассчитано на текущую единственную daily foreground-команду
+`reports:generate-daily` в `app/routes/console.php`. Она создаёт отчёт и ставит
+job в очередь, а не выполняет всю генерацию внутри scheduler. Новые background,
+sub-minute, detached или несколько последовательных scheduled events потребуют
+отдельной проверки: уже запущенный `schedule:run` здесь дренируется целиком.
+Бизнес-идемпотентность повторного daily-запуска не добавлена. `withoutOverlapping`
+защищает от пересечения, но не от повторного выполнения после завершения.
+
+Для этих двух сервисов Docker `stop_grace_period` — 70 секунд, внутренний предел
+после первого сигнала — 60 секунд. Повторный сигнал не продлевает ожидание.
+Outbox по SIGALRM выходит с кодом 124; scheduler принудительно завершает process
+group и выходит с кодом 124. Это аварийная остановка, не успешное завершение
+операции. Зависшие не прерываемые системные вызовы могут потребовать Docker SIGKILL;
+беспроблемное завершение любых реальных операций за этот срок не гарантировано.
+
+**Полного deploy ещё нет.** Будущая процедура обязана проверить фактические
+container exit codes и OOMKilled после остановки и запретить переключение при
+124, 137 или другом ненулевом результате. Один exit code `docker compose stop`
+не доказывает успешное завершение приложения. Миграции и автоматический
+переход к следующей фазе здесь не реализованы; backup вызывается отдельно.
+
+Outbox lease остаётся 5 минут; `processing_token` защищает отметки состояния
+после повторного claim, но не отменяет уже выполненный внешний эффект.
+После SIGKILL/тайм-аута событие может остаться processing до истечения lease и
+будет доступно повторно, если не было published/failed. При прерывании между
+listener и `markPublished` возможен повтор. Exactly-once не гарантируется;
+существующий WelcomeEmailStub дедуплицирует запись по event/message type, но это
+не универсальная гарантия для будущих listener. Длительная обработка дольше lease
+также допускает конкурентный повтор. Протокол lease/token и retry не изменён.
+Текущее outbox-событие — UserRegistered, а не RabbitMQ report completion.
+
+Изолированные проверки без Laravel bootstrap, env-файлов и внешних сервисов:
+
+```sh
+node --test docker/release/background.test.mjs
+```
+
+Нужны host PHP с pcntl/posix и `app/vendor`. Fixture использует настоящий
+OutboxProcessor/ProcessOutbox с repository в памяти и настоящий Laravel Scheduling
+Event с временным mutex и управляемой дочерней задачей. Проверка reaping всей
+process group при тайм-ауте запускается только в контейнере как PID 1; на хосте
+этот тест пропускается. SIGALRM-тест outbox вызывает настоящий deadline handler
+напрямую, не подтверждая фактическое ожидание 60 секунд.
+
+Контейнерный вариант принимает **локальный immutable image ID** через
+`BACKGROUND_TEST_IMAGE` и использует только daemon `unix:///var/run/docker.sock`:
+
+```sh
+BACKGROUND_TEST_IMAGE="$QUEUE_WORKER_TEST_IMAGE" node --test docker/release/background.test.mjs
+```
+
+Переменную задавайте явно ID свежесобранного локального production PHP-образа
+с pcntl/posix. Outbox-классы и scheduler используются только из образа:
+production-код не подменяется bind mounts. Тест монтирует лишь read-only fixture
+и собственный временный каталог для синхронизации; image ID и список mount
+destinations проверяются при создании контейнера. Scheduler загружается из
+`/usr/local/bin/scheduler.php`, установленного Dockerfile.
+Контейнеры без сети, без project volumes, без env-файлов, с read-only
+rootfs и `--pull=never`; удаляются только собственные контейнеры с проверенной
+меткой `pizza.background-test`. При недоступности daemon/аварийном завершении
+самого test runner очистка не гарантирована: проверяйте оставшиеся метки вручную.
+
+Проверки graceful-stop подтверждают завершение текущей операции, отсутствие
+следующего claim, освобождение тестового scheduler mutex и отсутствие оставшихся
+foreground потомков. Они не подтверждают восстановление реальных PostgreSQL
+lease, дедупликацию писем, атомарность PostgreSQL/RabbitMQ, MinIO или поведение
+production entrypoint при остановке во время начального `config:cache`.
+
+### Резервные копии релиза
+
+`docker/release/backup.sh` — отдельный инструмент, а не deploy. Команды
+`preflight`, `create`, `verify`, `restore-test` используют тот же FD 9 / `flock`
+каталога состояния, что и `release.sh`. `release.sh status/check` по-прежнему
+не останавливают сервисы и не создают backup. Нужны Linux, Node.js 24+, util-linux
+flock, локальный Docker socket `/var/run/docker.sock`, уже имеющиеся образы
+PostgreSQL и production PHP с ZipArchive. Docker context/remote host из shell
+игнорируются. Образы не скачиваются (`--pull=never`).
+
+Backup root должен заранее существовать, принадлежать пользователю команды и
+иметь права 0700. Рекомендуется отдельный диск вне Docker data volumes. Команда
+не читает `.env` и не принимает passwords в аргументах или конфигурации.
+Пример **шаблона** settings.json (значения в угловых скобках заменяются реальными
+локальными ID; это не готовая production-конфигурация):
+
+```json
+{
+  "schema_version": 1,
+  "project": "<existing-compose-project>",
+  "postgres_container": "<full-64-hex-container-id>",
+  "minio_container": "<full-64-hex-container-id>",
+  "utility_image": "sha256:<64-hex-local-production-php-image-id>",
+  "reserve_bytes": 268435456
+}
+```
+
+Project должен совпадать с `state.json`. Имена services должны соответствовать
+текущему Compose: postgres, minio, nginx, php, report-worker, outbox-worker,
+report-scheduler; minio-init, если существует, тоже считается writer. Неизвестные
+services, отсутствующие обязательные services и их дубликаты блокируют копию.
+MinIO `/data` должен быть local named volume без driver options; bind/NFS,
+распределённый MinIO и несколько storage volumes не поддерживаются этим форматом.
+PostgreSQL остаётся запущенным; инструменты берутся из его же образа/контейнера.
+
+Пример команд с fail-fast, без автоматической остановки сервисов:
+
+```sh
+(
+  set -eu
+  umask 077
+  sh docker/release/backup.sh preflight "$STATE_DIRECTORY" "$BACKUP_CONFIG" "$BACKUP_ROOT"
+)
+```
+
+`preflight` разрешён в `images_ready`: проверяет topology, tools, доступ к dump
+и globals, ZipArchive, оценку размеров и свободное место. Возвращает путь к
+новому неизменяемому preflight receipt, действительному 15 минут и привязанному
+к project, operation ID и revision. Путь нужно сохранить только после успешной
+команды; старый receipt не заменяет неудачную проверку нового состояния.
+
+Дальнейший порядок для **будущего** release coordinator:
+
+1. Под общей блокировкой выполнить preflight; при ошибке не начинать остановку.
+2. Через `persist(dir, expected, next, { preflight: receiptPath })` перейти из
+   images_ready в quiescing. Отсутствующий, просроченный или чужой receipt запрещён.
+3. Закрыть HTTP ingress, остановить scheduler, outbox, queue workers, PHP и
+   minio-init; проверить реальные exit codes/OOM. Затем штатно остановить MinIO.
+   Одного graceful shutdown недостаточно: контейнеры должны быть остановлены.
+4. Зафиксировать quiesced и создать backup. PostgreSQL не останавливать.
+5. Проверить backup; `persist(..., { backup: backupPath })` допускает backup_ready
+   только при совпадении source release, target operation, project и revision.
+   Переход backup_ready → migrating повторно проверяет файлы и SHA-256.
+   `advance()` остаётся чистой моделью; только `persist()` сохраняет переход.
+6. Лишь после этого будущий coordinator сможет запускать миграции. Самих миграций,
+   остановки/start сервисов и автоматического rollback этот инструмент не делает.
+
+Готовые команды для фиксации этих двух переходов (backup уже должен существовать):
+
+```sh
+(
+  set -eu
+  sh docker/release/release.sh accept-backup "$STATE_DIRECTORY" "$RELEASE_MANIFEST" "$BACKUP_CONFIG" "$BACKUP_PATH"
+  sh docker/release/release.sh mark-migrating "$STATE_DIRECTORY" "$RELEASE_MANIFEST" "$BACKUP_CONFIG" "$BACKUP_PATH"
+)
+```
+
+`accept-backup` требует quiesced и записывает backup_ready; `mark-migrating`
+требует backup_ready и записывает migrating, **не выполняя миграции**. Обе команды
+используют существующую блокировку FD 9, заново проверяют backup и PostgreSQL TOC,
+source/target release, project и исходную revision. Повтор команды в её целевой
+фазе повторяет проверки, сохраняя байты state.json и revision. Повреждённая,
+отсутствующая или чужая копия запрещена и при повторе. Пропуск фаз и обратный
+переход не допускаются; current/previous не меняются. Остановка сервисов и
+создание backup остаются отдельными действиями до этих команд.
+
+Согласованная offline-копия MinIO **невозможна до остановки writers**. Поэтому
+preflight блокирует начало остановки, а сбой создания backup после quiesce
+блокирует дальнейшие фазы, но не отменяет уже произошедшую остановку.
+`backup.sh` держит lock на время одной команды; будущий coordinator должен
+удерживать ту же блокировку на протяжении всей операции, а не запускать
+конкурирующие CLI-команды. API модуля можно вызывать при уже удерживаемом FD 9.
+
+После quiesce (каталоги/переменные задаёт оператор):
+
+```sh
+(
+  set -eu
+  umask 077
+  sh docker/release/backup.sh create "$STATE_DIRECTORY" "$BACKUP_CONFIG" "$BACKUP_ROOT" "$BACKUP_ID"
+)
+```
+
+Команда возвращает путь `$BACKUP_ROOT/$BACKUP_ID`. Backup ID состоит из 1–64
+строчных ASCII букв, цифр, `_` и `-`, начиная с буквы/цифры. Существующие ID
+никогда не переиспользуются, в том числе после ошибки/SIGKILL: `.claim-ID`
+сохраняется для разбора оператором. Каждая попытка пишет в закрытый `.partial-*`.
+Файлы flush/fsync, каталог публикуется rename после записи `COMPLETE`; скрытый
+partial не принимается verifier даже если содержит COMPLETE. При обычном отказе
+partial удаляется; после SIGKILL он может остаться для ручного разбора.
+Автоматической очистки старых резервных копий нет.
+
+Состав копии, формат schema_version 1:
+
+- `postgres.dump`: `pg_dump -Fc` configured database, проверенный `pg_restore --list`.
+- `globals.sql`: `pg_dumpall --globals-only --no-role-passwords`; роли и другие
+  cluster globals нужны для полноценного восстановления владельцев/прав.
+- `minio.zip`: offline snapshot **всего** `/data`, включая `.minio.sys`, реальные
+  object contents и версии, а не только bucket listing. ZipArchive входит в
+  PHP-образ; helper проверяет SHA-256 содержимого каждого файла после записи.
+- `metadata.json`: UTC creation time, backup ID, source release ID / Git SHA,
+  target operation ID, state revision, PostgreSQL server version / immutable
+  image ID / custom format, MinIO image ID / offline-zip-v1, размеры и SHA-256
+  трёх data files. Для первого релиза без current используется candidate manifest
+  как идентификатор baseline; происхождение уже существующих данных это не доказывает.
+- `COMPLETE`: SHA-256 metadata.json. Файлы 0600, каталог 0700.
+
+Минимальный свободный резерв — 64 MiB, задаваемый reserve_bytes. Предварительная
+оценка — удвоенные размеры PostgreSQL database и MinIO volume плюс резерв;
+после копирования резерв проверяется снова. Это не физическое резервирование
+места: конкурирующее заполнение диска или ENOSPC приводит к отказу, а не к
+успешной копии. Изолированное restore также требует места Docker и памяти для
+временного PostgreSQL tmpfs. Метаданные и CLI не содержат паролей; сами data files
+могут содержать персональные данные и MinIO IAM secrets. Храните их на защищённом
+диске. Шифрование, offsite copy, retention и защита от потери всего VPS не добавлены.
+Контрольные суммы не являются цифровой подписью: backup root доверен оператору,
+его нельзя отдавать на запись другим пользователям/сценариям или изменять во время
+backup/verify. Не удаляйте и не заменяйте state directory во время операций.
+
+Перед/после копирования проверяются фактические состояния writers, timestamps
+их старта/остановки, отсутствие иных running writable mounts MinIO volume и
+активных SQL client sessions. Эти проверки не запрещают административный запуск
+контейнеров или новое внешнее SQL-подключение между проверками. На время quiesce
+оператор обязан исключить внешних writers, cron и изменение topology/volumes.
+Произвольный stop/start вне release lock не поддерживается.
+
+Проверка готовой копии и отдельный безопасный restore test:
+
+```sh
+(
+  set -eu
+  sh docker/release/backup.sh verify "$STATE_DIRECTORY" "$BACKUP_CONFIG" "$BACKUP_PATH"
+  sh docker/release/backup.sh restore-test "$STATE_DIRECTORY" "$BACKUP_CONFIG" "$BACKUP_PATH"
+)
+```
+
+Verify проверяет allowlist/типы метаданных, полный состав файлов, отсутствие
+symlinks, COMPLETE, размеры, SHA-256 и PostgreSQL TOC. Restore-test создаёт новый
+PostgreSQL-контейнер без сети/портов с новым tmpfs и базой `backup_verify`, вызывает
+`pg_restore --exit-on-error --no-owner --no-acl`. Globals не применяются к основной
+или тестовой cluster: тест подтверждает восстановимость схемы/данных, а не точное
+восстановление production ownership, ACL, role passwords или tablespaces. Роли
+и credentials для полного аварийного восстановления нужно восстанавливать
+отдельно в чистой среде по globals/runtime configuration; такой production restore
+пока не реализован. Файл globals намеренно не содержит паролей ролей.
+
+MinIO ZIP извлекается в **новый отдельный Docker volume** с проверкой содержимого.
+Path traversal, links, special file types и перезапись извлечённых файлов запрещены.
+Это проверка восстановления файлов, не запуск production MinIO и не гарантия
+совместимости другой версии storage format. Нормализация владельца/прав и запуск
+MinIO с восстановленным backend требуют отдельной процедуры и того же image ID.
+Рабочие PG/MinIO volume не используются как restore destination. Изолированные
+ресурсы имеют уникальные имена/метки и удаляются после успеха и ошибки; helper
+контейнеры также помечены `pizza.backup-helper`. SIGKILL самого инструмента или
+потеря Docker daemon может потребовать ручного разбора оставшихся помеченных
+ресурсов. Никогда не удаляйте volumes без проверки владельца и метки.
+
+Адресные тесты (полный уже пройденный release-набор повторять не требуется):
+
+```sh
+node --test docker/release/backup.test.mjs docker/release/deploy.test.mjs
+# Opt-in: локальные postgres:15-alpine, minio/minio и production PHP с ZipArchive.
+BACKUP_DOCKER_TEST=1 BACKUP_TEST_PHP_IMAGE="$LOCAL_PHP_IMAGE_ID" \
+  node --test docker/release/backup-docker.test.mjs
+```
+
+Docker-тест не использует текущий Compose project: создаёт свой уникальный project,
+PostgreSQL/MinIO без внешней сети и собственные volumes, тестовую таблицу и S3-объект.
+Проверяет реальный dump/restore, отказ при работающем MinIO, cleanup после ошибки
+restore и сохранность исходных тестовых данных. Обычные unit-тесты используют
+временные файлы/fake adapter; их успех не доказывает доступность реального VPS.
 
 `reports/` содержит генерируемые XML, архивы, checksum/IDs и state-файлы;
 каталог исключён из Git и backend Docker-контекста. Frontend Docker-контекст

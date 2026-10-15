@@ -92,9 +92,14 @@ FROM base AS prod
 
 ENV APP_ENV=production APP_DEBUG=0
 
+# Background workers require pcntl; scheduler sessions also require posix.
+RUN docker-php-ext-install pcntl \
+    && php -r 'exit(extension_loaded("pcntl") && function_exists("pcntl_async_signals") && function_exists("posix_setsid") ? 0 : 1);'
+
 COPY --from=build /var/www/app /var/www/app
 COPY docker/php/entrypoint.prod.sh /usr/local/bin/entrypoint.prod.sh
 COPY docker/php/entrypoint.worker.sh /usr/local/bin/entrypoint.worker.sh
+COPY docker/php/scheduler.php /usr/local/bin/scheduler.php
 
 RUN chmod +x /usr/local/bin/entrypoint.prod.sh /usr/local/bin/entrypoint.worker.sh \
     && mkdir -p \
