@@ -12,7 +12,7 @@ use App\Modules\Report\Presentation\Controllers\ReportController;
 use Illuminate\Support\Facades\Route;
 
 foreach (['id', 'itemId', 'orderId', 'report'] as $parameter) {
-    Route::pattern($parameter, '[1-9]\\d*');
+    Route::pattern($parameter, '[1-9]\d*');
 }
 
 # Public routes

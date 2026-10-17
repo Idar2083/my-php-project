@@ -52,10 +52,10 @@ class OrderService
 
             foreach ($cart->items as $item) {
                 $totalPrice += (float) $item->product->price * $item->quantity;
+            }
 
-                if ($totalPrice > 99_999_999.99) {
-                    throw ValidationException::withMessages(['cart' => ['Order total exceeds the supported amount.']]);
-                }
+            if ($totalPrice > 99_999_999.99) {
+                throw ValidationException::withMessages(['cart' => ['Order total exceeds the supported amount.']]);
             }
 
             $order = Order::query()->create([
