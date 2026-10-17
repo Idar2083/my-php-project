@@ -69,7 +69,7 @@ class ProductService
     {
         Cache::add(
             self::CACHE_VERSION_KEY,
-            0,
+            1,
         );
 
         Cache::increment(

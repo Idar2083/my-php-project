@@ -11,6 +11,11 @@ $projectRoot = dirname(__DIR__, 2);
 
 require $projectRoot . '/vendor/autoload.php';
 
+$input = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
+if (getenv('APP_ENV') !== 'testing' || ($input['database']['driver'] ?? null) !== 'pgsql') {
+    exit(1);
+}
+
 /** @var \Illuminate\Foundation\Application $app */
 $app = require $projectRoot . '/bootstrap/app.php';
 
@@ -18,16 +23,11 @@ $app = require $projectRoot . '/bootstrap/app.php';
 $kernel = $app->make(Kernel::class);
 $kernel->bootstrap();
 
-config([
-    'database.default' => 'pgsql',
-    'database.connections.pgsql.host' => 'postgres',
-    'database.connections.pgsql.port' => 5_432,
-    'database.connections.pgsql.database' => 'pizza_app_test',
-    'database.connections.pgsql.username' => 'pizza_db_user',
-]);
-
+config(['database.default' => 'pgsql', 'database.connections.pgsql' => $input['database']]);
 DB::purge('pgsql');
-DB::setDefaultConnection('pgsql');
+DB::statement("SET lock_timeout = '15s'");
+echo json_encode(['pid' => DB::selectOne('SELECT pg_backend_pid() AS pid')->pid], JSON_THROW_ON_ERROR) . PHP_EOL;
+fflush(STDOUT);
 
 try {
     $user = User::query()->findOrFail((int) $argv[1]);
@@ -45,7 +45,7 @@ try {
 } catch (Throwable $exception) {
     fwrite(
         STDERR,
-        $exception::class . ': ' . $exception->getMessage(),
+        $exception::class,
     );
 
     exit(1);

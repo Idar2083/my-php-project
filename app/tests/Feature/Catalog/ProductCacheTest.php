@@ -28,16 +28,24 @@ class ProductCacheTest extends TestCase
         $service->bumpCacheVersion();
 
         $this->assertSame(
-            1,
+            2,
             (int) Cache::get('products.version'),
         );
 
         $service->bumpCacheVersion();
 
         $this->assertSame(
-            2,
+            3,
             (int) Cache::get('products.version'),
         );
+    }
+
+    public function test_first_product_invalidates_a_cached_empty_catalog(): void
+    {
+        Cache::flush();
+        $this->getJson('/api/products')->assertOk()->assertJsonCount(0, 'data');
+        $product = Product::factory()->create();
+        $this->getJson('/api/products')->assertOk()->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $product->id);
     }
 
     public function test_products_are_cached(): void

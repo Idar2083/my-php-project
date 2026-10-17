@@ -7,16 +7,14 @@ namespace App\Modules\Cart\Application\Services;
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Domain\Models\Cart;
 use App\Modules\Cart\Domain\Models\CartItem;
+use App\Modules\Catalog\Domain\Enums\ProductCategory;
 use App\Modules\Catalog\Domain\Models\Product;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CartService
 {
     private const int TRANSACTION_ATTEMPTS = 3;
-
-    private const string POSTGRES_UNIQUE_VIOLATION = '23505';
 
     public function getCart(User $user): Cart
     {
@@ -147,19 +145,9 @@ class CartService
             return $cart;
         }
 
-        try {
-            $cart = Cart::query()->create([
-                'user_id' => $user->id,
-            ]);
-
-            $cart->wasRecentlyCreated = false;
-
-            return $cart;
-        } catch (QueryException $exception) {
-            if ($exception->getCode() !== self::POSTGRES_UNIQUE_VIOLATION) {
-                throw $exception;
-            }
-        }
+        // Laravel creates inside a savepoint when already in a transaction.
+        // A competing insert can fail without aborting our outer transaction.
+        Cart::query()->createOrFirst(['user_id' => $user->id]);
 
         $cart = Cart::query()
             ->where('user_id', $user->id)
@@ -177,10 +165,11 @@ class CartService
         int $newQuantity,
         ?int $excludedItemId = null,
     ): void {
+        $category = ProductCategory::fromLabel($product->category);
         $query = CartItem::query()
             ->where('cart_id', $cart->id)
-            ->whereHas('product', static function ($query) use ($product): void {
-                $query->where('category', $product->category);
+            ->whereHas('product', static function ($query) use ($category): void {
+                $query->whereRaw('LOWER(TRIM(category)) = ?', [$category?->value]);
             });
 
         if ($excludedItemId !== null) {
@@ -190,9 +179,9 @@ class CartService
         $currentQuantity = (int) $query->sum('quantity');
         $totalQuantity = $currentQuantity + $newQuantity;
 
-        $limit = match ($product->category) {
-            'pizza' => Cart::MAX_PIZZAS,
-            'drink' => Cart::MAX_DRINKS,
+        $limit = match ($category) {
+            ProductCategory::PIZZA => Cart::MAX_PIZZAS,
+            ProductCategory::DRINK => Cart::MAX_DRINKS,
             default => throw ValidationException::withMessages([
                 'product_id' => [
                     __('api.cart.unsupported_category'),
