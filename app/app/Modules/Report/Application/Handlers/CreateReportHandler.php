@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace App\Modules\Report\Application\Handlers;
 
-use App\Modules\Report\Application\Jobs\GenerateReportJob;
 use App\Modules\Report\Domain\Enums\ReportStatus;
+use App\Modules\Report\Domain\Events\ReportRequestedEvent;
 use App\Modules\Report\Domain\Models\Report;
+use App\Shared\Application\Outbox\Contracts\OutboxRepository;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 final readonly class CreateReportHandler
 {
+    public function __construct(private OutboxRepository $outbox)
+    {
+    }
+
     public function handle(
         \DateTimeInterface $dateFrom,
         \DateTimeInterface $dateTo,
@@ -24,10 +29,8 @@ final readonly class CreateReportHandler
                     'date_to' => $dateTo,
                 ]);
 
-                GenerateReportJob::dispatch(
-                    reportId: $report->id,
-                    messageId: (string) Str::uuid(),
-                );
+                $event = new ReportRequestedEvent((string) Str::uuid(), $report->id, now()->toImmutable());
+                $this->outbox->add($event->eventId, ReportRequestedEvent::TYPE, $event->payload(), $event->occurredAt);
 
                 return $report;
             },

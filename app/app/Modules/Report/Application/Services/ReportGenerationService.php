@@ -6,6 +6,7 @@ namespace App\Modules\Report\Application\Services;
 
 use App\Modules\Report\Application\Contracts\ReportOrderItemReader;
 use App\Modules\Report\Application\Contracts\ReportStorage;
+use App\Modules\Report\Application\Exceptions\PermanentReportGenerationException;
 use App\Modules\Report\Domain\Enums\ReportStatus;
 use App\Modules\Report\Domain\Models\Report;
 
@@ -79,7 +80,7 @@ final readonly class ReportGenerationService
             $report->error = null;
             $report->save();
         } catch (\Throwable $exception) {
-            $report->status = ReportStatus::FAILED;
+            $report->status = $exception instanceof PermanentReportGenerationException ? ReportStatus::FAILED : ReportStatus::PENDING;
             $report->error = $exception->getMessage();
             $report->save();
 

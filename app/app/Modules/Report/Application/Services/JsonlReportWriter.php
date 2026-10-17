@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Modules\Report\Application\Services;
 
+use App\Modules\Report\Application\Exceptions\PermanentReportGenerationException;
+
 final class JsonlReportWriter
 {
     private const int JSON_FLAGS =
@@ -53,7 +55,7 @@ final class JsonlReportWriter
                         self::JSON_FLAGS,
                     );
                 } catch (\JsonException $exception) {
-                    throw new \RuntimeException(sprintf(
+                    throw new PermanentReportGenerationException(sprintf(
                         'Unable to encode order item %d for JSONL report.',
                         $row->order_item_id,
                     ), $exception->getCode(), previous: $exception);

@@ -13,6 +13,8 @@ use App\Modules\Catalog\Presentation\Observers\ProductObserver;
 use App\Modules\Report\Application\Contracts\ReportCompletionPublisher;
 use App\Modules\Report\Application\Contracts\ReportOrderItemReader;
 use App\Modules\Report\Application\Contracts\ReportStorage;
+use App\Modules\Report\Domain\Events\ReportRequestedEvent;
+use App\Modules\Report\Infrastructure\Messaging\PublishReportJob;
 use App\Modules\Report\Infrastructure\Messaging\RabbitMqPublisher;
 use App\Modules\Report\Infrastructure\Persistence\ReportOrderItemQuery;
 use App\Modules\Report\Infrastructure\Storage\ReportStorage as InfrastructureReportStorage;
@@ -67,6 +69,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Product::observe(ProductObserver::class);
+        Event::listen(ReportRequestedEvent::class, PublishReportJob::class);
 
         Event::listen(
             UserRegisteredEvent::class,

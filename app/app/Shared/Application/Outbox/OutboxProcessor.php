@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Shared\Application\Outbox;
 
 use App\Modules\Auth\Domain\Events\UserRegisteredEvent;
+use App\Modules\Report\Domain\Events\ReportRequestedEvent;
 use App\Shared\Application\Outbox\Contracts\OutboxEventRepository;
 use Illuminate\Support\Facades\Event;
 
@@ -47,8 +48,13 @@ final readonly class OutboxProcessor
     private function restoreEvent(
         string $eventType,
         array $payload,
-    ): UserRegisteredEvent {
+    ): UserRegisteredEvent|ReportRequestedEvent {
         return match ($eventType) {
+            ReportRequestedEvent::TYPE => new ReportRequestedEvent(
+                eventId: $this->requiredString($payload, 'event_id'),
+                reportId: $this->requiredInt($payload, 'report_id'),
+                occurredAt: $this->requiredDateTime($payload, 'occurred_at'),
+            ),
             UserRegisteredEvent::TYPE => new UserRegisteredEvent(
                 eventId: $this->requiredString($payload, 'event_id'),
                 userId: $this->requiredInt($payload, 'user_id'),
