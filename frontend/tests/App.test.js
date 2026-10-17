@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import App from '../src/App.vue'
+import App from '../src/components/Catalog.vue'
 import { jsonResponse, product, productPage } from './fixtures.js'
 
 let wrapper

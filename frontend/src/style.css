@@ -31,3 +31,36 @@ button:disabled { opacity: .45; cursor: default; }
 .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid #dcded4; border-top-color: #315934; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+.shop-bar { max-width: 1120px; margin: auto; padding: 20px 24px; border-bottom: 1px solid #dcded4; }
+.brand { font-size: 1.4rem; font-weight: 800; color: #315934; text-decoration: none; }
+.shop-nav, .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+.feedback { max-width: 1120px; padding: 0 24px; margin: auto; }
+.panel { padding: 24px; border: 1px solid #dcded4; border-radius: 16px; background: #fffdf8; overflow-wrap: anywhere; }
+.narrow { max-width: 680px; margin: auto; }
+.narrow h1 { font-size: clamp(1.8rem, 5vw, 2.5rem); }
+fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+label { display: flex; flex-direction: column; gap: 6px; margin: 14px 0; font-weight: 600; }
+input, select { font: inherit; width: 100%; min-width: 0; border: 1px solid #929b8e; border-radius: 8px; padding: 10px; background: white; color: #252a24; }
+input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #b35c27; outline-offset: 2px; }
+.secondary { background: #e5eadf; color: #254428; }
+.secondary:hover:not(:disabled) { background: #d2ddc9; }
+.notice { padding: 14px 18px; border-radius: 10px; background: #e5eadf; }
+.notice.error { background: #fcebe5; color: #812d15; }
+.notice p { margin: 0; }
+.muted { color: #596154; font-size: .95rem; }
+.item-list { list-style: none; padding: 0; display: grid; gap: 16px; }
+.cart-item, .order-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 20px; }
+.cart-item form { display: flex; align-items: end; gap: 10px; }
+.cart-item label { max-width: 110px; margin: 0; }
+.total { font-size: 1.2rem; font-weight: 700; }
+.order-detail { margin-top: 24px; height: auto; display: block; }
+.products article button { margin-top: 20px; }
+@media (max-width: 560px) {
+  main { padding: 28px 16px; }
+  .shop-bar, .feedback { padding-left: 16px; padding-right: 16px; }
+  .shop-nav button { padding: 8px 12px; }
+  .panel { padding: 18px; }
+  .cart-item form { width: 100%; }
+  .order-row button { width: 100%; }
+}

@@ -1,99 +1,91 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from 'vue'
-import { fetchProducts } from './api/products.js'
-
-const status = ref('loading')
-const products = ref([])
-const meta = ref(null)
-const requestedPage = ref(1)
-let controller
-let timer
-
-async function load(page = requestedPage.value) {
-  controller?.abort()
-  clearTimeout(timer)
-  const request = new AbortController()
-  controller = request
-  requestedPage.value = page
-  status.value = 'loading'
-  timer = setTimeout(() => request.abort(), 10000)
-
-  try {
-    let result = await fetchProducts(page, request.signal)
-    if (controller !== request || request.signal.aborted) return
-    if (result.meta.current_page !== page) throw new Error('Некорректная страница каталога')
-
-    // Recover once when products were removed; never loop on a changing catalog.
-    if (result.meta.total > 0 && result.meta.current_page > result.meta.last_page) {
-      requestedPage.value = result.meta.last_page
-      result = await fetchProducts(requestedPage.value, request.signal)
-      if (controller !== request || request.signal.aborted) return
-      if (result.meta.current_page !== requestedPage.value ||
-        (result.meta.total > 0 && result.meta.current_page > result.meta.last_page)) {
-        throw new Error('Некорректная страница каталога')
-      }
-    }
-    products.value = result.products
-    meta.value = result.meta
-    status.value = products.value.length ? 'success' : 'empty'
-  } catch {
-    if (controller === request) status.value = 'error'
-  } finally {
-    if (controller === request) clearTimeout(timer)
+import { provide, ref } from 'vue'
+import { createApi, resource } from './api/client.js'
+import Catalog from './components/Catalog.vue'
+import AuthForm from './components/AuthForm.vue'
+import CartView from './components/CartView.vue'
+import CheckoutView from './components/CheckoutView.vue'
+import OrdersView from './components/OrdersView.vue'
+import RequestError from './components/RequestError.vue'
+const view = ref('catalog')
+const user = ref(null)
+const busy = ref(false)
+const error = ref(null)
+const notice = ref('')
+let pendingProduct = null
+const api = createApi(() => {
+  api.setToken(null); user.value = null; view.value = 'login'; pendingProduct = null
+  notice.value = 'Сессия завершена. Войдите снова.'
+})
+provide('api', api)
+function navigate(target) {
+  if (busy.value) return
+  if (['cart', 'checkout', 'orders', 'admin'].includes(target) && !user.value) target = 'login'
+  if (target === 'admin' && user.value?.role !== 'admin') target = 'catalog'
+  view.value = target; error.value = null; notice.value = ''
+}
+async function authenticated(profile) {
+  user.value = profile; view.value = 'catalog'; error.value = null; notice.value = 'Вы вошли в аккаунт.'
+  if (pendingProduct !== null) {
+    const id = pendingProduct; pendingProduct = null
+    await addProduct(id)
   }
 }
-
-onMounted(() => load())
-onUnmounted(() => {
-  controller?.abort()
-  controller = null
-  clearTimeout(timer)
-})
+async function addProduct(id) {
+  if (busy.value) return
+  if (!user.value) { pendingProduct = id; navigate('login'); return }
+  busy.value = true; error.value = null; notice.value = ''
+  try {
+    resource(await api.request('/cart/items', { method: 'POST', body: { product_id: id, quantity: 1 } }))
+    notice.value = 'Товар добавлен в корзину.'
+  } catch (failure) { error.value = failure }
+  finally { busy.value = false }
+}
+async function logout() {
+  if (busy.value) return
+  busy.value = true; error.value = null
+  let confirmed = false
+  try { await api.request('/logout', { method: 'POST' }); confirmed = true }
+  catch { /* Always discard the local session, including on network failure. */ }
+  finally {
+    api.setToken(null); user.value = null; pendingProduct = null; view.value = 'catalog'; busy.value = false
+    notice.value = confirmed ? 'Вы вышли из аккаунта.' : 'Локальная сессия завершена. Сервер не подтвердил отзыв токена.'
+  }
+}
+function ordered(order) {
+  view.value = 'orders'; notice.value = `Заказ №${order.id} оформлен. Итоговая сумма: ${order.total_price}.`
+}
 </script>
-
 <template>
-  <main :aria-busy="status === 'loading'">
-    <header>
-      <p class="eyebrow">Pizza & drinks</p>
-      <h1>Каталог товаров</h1>
-      <p class="intro">Пицца и напитки — выбирайте то, что любите.</p>
-    </header>
-
-    <section v-if="status === 'loading'" class="state" role="status">
-      <span class="spinner" aria-hidden="true"></span>
-      <h2>Загружаем товары…</h2>
-    </section>
-    <section v-else-if="status === 'error'" class="state" role="alert">
-      <h2>Не удалось загрузить товары</h2>
-      <p>Проверьте соединение и попробуйте ещё раз.</p>
-      <button @click="load()">Повторить загрузку</button>
-    </section>
-    <section v-else-if="status === 'empty'" class="state" role="status">
-      <h2>Товаров пока нет</h2>
-      <p>Загляните позже — каталог будет пополняться.</p>
-    </section>
-    <section v-else aria-label="Товары">
-      <p class="count">Всего товаров: {{ meta.total }}</p>
-      <ul class="products">
-        <li v-for="product in products" :key="product.id">
-          <article>
-            <p class="category">{{ product.category }}</p>
-            <h2>{{ product.name }}</h2>
-            <p v-if="product.description" class="description">{{ product.description }}</p>
-            <dl>
-              <div><dt>Цена</dt><dd>{{ product.price }}</dd></div>
-              <div><dt>Вес</dt><dd>{{ product.weight }}</dd></div>
-            </dl>
-          </article>
-        </li>
-      </ul>
-    </section>
-
-    <nav v-if="(status === 'success' || status === 'empty') && meta.last_page > 1"
-      class="pagination" aria-label="Страницы каталога">
-      <button :disabled="meta.current_page <= 1" @click="load(meta.current_page - 1)">Назад</button>
-      <span>Страница {{ meta.current_page }} из {{ meta.last_page }}</span>
-      <button :disabled="meta.current_page >= meta.last_page" @click="load(meta.current_page + 1)">Далее</button>
-    </nav>
-  </main>
+  <div class="shop-shell">
+    <div class="shop-bar">
+      <a href="#catalog" class="brand" @click.prevent="navigate('catalog')">Pizza & drinks</a>
+      <div class="shop-nav" aria-label="Разделы магазина">
+        <button class="secondary" :disabled="busy" @click="navigate('catalog')">Каталог</button>
+        <template v-if="user">
+          <button class="secondary" :disabled="busy" @click="navigate('cart')">Корзина</button>
+          <button class="secondary" :disabled="busy" @click="navigate('orders')">Мои заказы</button>
+          <button v-if="user.role === 'admin'" class="secondary" :disabled="busy" @click="navigate('admin')">Заказы магазина</button>
+          <span>{{ user.name }}</span><button :disabled="busy" @click="logout">Выйти</button>
+        </template>
+        <template v-else>
+          <button class="secondary" :disabled="busy" @click="navigate('login')">Вход</button>
+          <button :disabled="busy" @click="navigate('register')">Регистрация</button>
+        </template>
+      </div>
+    </div>
+    <div class="feedback">
+      <RequestError :error="error" />
+      <p v-if="notice" class="notice" role="status">{{ notice }}</p>
+      <p v-if="busy" role="status">Выполняем запрос…</p>
+    </div>
+    <Catalog v-if="view === 'catalog'" :busy="busy" :signed-in="!!user" @add="addProduct" />
+    <main v-else>
+      <AuthForm v-if="view === 'login' || view === 'register'" :key="view" :register="view === 'register'" @authenticated="authenticated" @busy="busy = $event" />
+      <CartView v-else-if="view === 'cart' && user" @checkout="navigate('checkout')" />
+      <CheckoutView v-else-if="view === 'checkout' && user" @ordered="ordered" @history="navigate('orders')" />
+      <OrdersView v-else-if="view === 'orders' && user" key="buyer-orders" />
+      <OrdersView v-else-if="view === 'admin' && user?.role === 'admin'" key="admin-orders" admin />
+    </main>
+  </div>
 </template>

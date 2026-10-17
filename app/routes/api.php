@@ -6,6 +6,7 @@ use App\Modules\Auth\Presentation\Controllers\AdminUserController;
 use App\Modules\Auth\Presentation\Controllers\AuthController;
 use App\Modules\Cart\Presentation\Controllers\CartController;
 use App\Modules\Catalog\Presentation\Controllers\ProductController;
+use App\Modules\Order\Presentation\Controllers\AdminOrderController;
 use App\Modules\Order\Presentation\Controllers\OrderController;
 use App\Modules\Report\Presentation\Controllers\ReportController;
 use Illuminate\Support\Facades\Route;
@@ -23,6 +24,9 @@ Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:lo
 
 # Admin routes
 Route::middleware(['auth:api', 'admin'])->group(function (): void {
+    Route::get('/admin/orders', [AdminOrderController::class, 'index']);
+    Route::get('/admin/orders/{orderId}', [AdminOrderController::class, 'show']);
+
     Route::get('/admin/users', [AdminUserController::class, 'index']);
     Route::patch('/admin/users/{userId}/role', [AdminUserController::class, 'updateRole'])
         ->whereNumber('userId');

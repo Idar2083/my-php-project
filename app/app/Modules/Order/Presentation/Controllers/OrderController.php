@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Order\Application\Services\OrderService;
 use App\Modules\Order\Domain\Models\DTO\AddressDto;
+use App\Modules\Order\Presentation\Requests\IndexOrdersRequest;
 use App\Modules\Order\Presentation\Requests\StoreOrderRequest;
 use App\Modules\Order\Presentation\Requests\UpdateOrderStatusRequest;
 use App\Modules\Order\Presentation\Resources\OrderResource;
@@ -47,13 +48,13 @@ class OrderController extends Controller
         );
     }
 
-    public function index(Request $request): AnonymousResourceCollection
+    public function index(IndexOrdersRequest $request): AnonymousResourceCollection
     {
         /** @var User $user */
         $user = $request->user();
 
         return OrderResource::collection(
-            $this->orderService->getOrders($user),
+            $this->orderService->getOrders($user, $request->has('page') ? $request->getPage() : null),
         );
     }
 
