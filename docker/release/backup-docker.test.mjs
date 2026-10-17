@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import test from 'node:test'
@@ -15,7 +15,7 @@ const enabled=process.env.BACKUP_DOCKER_TEST==='1'
 const env={PATH:process.env.PATH,HOME:process.env.HOME,DOCKER_HOST:'unix:///var/run/docker.sock'}
 function docker(...args) {
   const result=spawnSync('docker',args,{env,encoding:'utf8',timeout:300000,maxBuffer:1024*1024})
-  assert.equal(result.status,0,`Isolated Docker command failed: ${args[0]}`)
+  assert.equal(result.status,0,`Isolated Docker command failed: ${args[0]}: ${result.stderr}`)
   return result.stdout.trim()
 }
 async function ready(args) {
@@ -30,7 +30,7 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
   const owner=randomUUID(), project='pizza-backup-test-'+owner
   const root=fs.mkdtempSync(join(tmpdir(),'pizza-backup-integration-'))
   const containers=[], volumes=[]
-  let restored=false, copied=false
+  let restored=false, copied=false, s3Checked=false
   function createContainer(service,image,args=[]) {
     const id=docker('create','--pull=never','--network=none','--label',`pizza.backup-fixture=${owner}`,
       '--label',`com.docker.compose.project=${project}`,'--label',`com.docker.compose.service=${service}`,...args,image)
@@ -49,7 +49,16 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
     docker('start',minio); await ready(['exec',minio,'curl','-fsS','http://127.0.0.1:9000/minio/health/live'])
     const curl=['exec',minio,'curl','-fsS','--aws-sigv4','aws:amz:us-east-1:s3','--user','fixtureuser:fixturepassword']
     docker(...curl,'-X','PUT','http://127.0.0.1:9000/backup-fixture')
+    const versioning='<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>'
+    docker(...curl,'-X','PUT','-H','Content-Type: application/xml','-H',`Content-MD5: ${createHash('md5').update(versioning).digest('base64')}`,'--data-binary',versioning,'http://127.0.0.1:9000/backup-fixture?versioning')
     docker(...curl,'-X','PUT','--data-binary','isolated-object-payload','http://127.0.0.1:9000/backup-fixture/object')
+    docker(...curl,'-X','PUT','--data-binary','isolated-new-version','http://127.0.0.1:9000/backup-fixture/object')
+    docker(...curl,'-X','PUT','http://127.0.0.1:9000/backup-empty')
+    docker(...curl,'-X','PUT','http://127.0.0.1:9000/backup-no-objects')
+    docker(...curl,'-X','PUT','--data-binary','','http://127.0.0.1:9000/backup-empty/zero')
+    const largePayload=Buffer.alloc(3*1024*1024,90)
+    const upload=spawnSync('docker',['exec','-i',minio,'curl','-fsS','--aws-sigv4','aws:amz:us-east-1:s3','--user','fixtureuser:fixturepassword','-X','PUT','--data-binary','@-','http://127.0.0.1:9000/backup-fixture/zz-large'],{env,input:largePayload,timeout:30000,encoding:'utf8'})
+    assert.equal(upload.status,0,'Controlled large-object upload failed')
     for(const service of ['nginx','php','report-worker','outbox-worker','report-scheduler']) createContainer(service,pgImage,['--entrypoint','true'])
     const manifest=create({CI_COMMIT_SHA:'a'.repeat(40),CI_PIPELINE_ID:'456',PHP_IMAGE:'registry.example.test/p/php@sha256:'+'b'.repeat(64),NGINX_IMAGE:'registry.example.test/p/nginx@sha256:'+'c'.repeat(64)})
     let state=advance(begin(initialState(project),manifest),manifest,'images_ready')
@@ -75,19 +84,64 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
       if(args.at(-1)==='restore-test')copied=true
       return result
     }
+    const serviceCheck=driver.verifyRestoredMinio.bind(driver)
+    driver.verifyRestoredMinio=(volume,metadata,owner)=>{
+      assert.notEqual(volume,volumes[0])
+      const result=serviceCheck(volume,metadata,owner)
+      assert.deepEqual(result,{buckets:3,versions:4,bytes:largePayload.length+Buffer.byteLength('isolated-new-versionisolated-object-payload'),content_sha256:createHash('sha256').update('isolated-new-versionisolated-object-payload').update(largePayload).digest('hex')})
+      s3Checked=true
+      return result
+    }
     restoreTest(backup,driver)
-    assert.equal(restored,true);assert.equal(copied,true)
+    assert.equal(restored,true);assert.equal(copied,true);assert.equal(s3Checked,true)
     driver.run=(args,options)=>{
       if(args[0]==='exec' && args.includes('pg_restore')) throw new Error('controlled isolated restore failure')
       return originalRun(args,options)
     }
     assert.throws(()=>restoreTest(backup,driver))
     assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test'),'')
+    driver.run=(args,options)=>{
+      if(args.includes('/minio-service-check.php')) throw new Error('controlled S3 read failure')
+      return originalRun(args,options)
+    }
+    assert.throws(()=>restoreTest(backup,driver))
+    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test'),'')
+    assert.equal(docker('volume','ls','-q','--filter','label=pizza.backup-test'),'')
     driver.run=originalRun
+    // Exercise the combined coordinator with real dump/snapshot/restore, on the
+    // same isolated fixtures. Only Compose/image acquisition is faked: no Registry.
+    const stateDirectory=join(root,'release-state')
+    fs.mkdirSync(stateDirectory,{mode:0o700})
+    fs.writeFileSync(join(stateDirectory,'state.json'),JSON.stringify(initialState(project)),{mode:0o600})
+    const coordinated=spawnSync('sh',['-ec','exec 9<"$TEST_STATE";flock -n -x 9;exec node --input-type=module -e "$TEST_CODE"'],{
+      env:{...env,TEST_STATE:stateDirectory,TEST_CODE:`
+        import fs from 'node:fs';
+        import assert from 'node:assert/strict';
+        import {backupRelease} from ${JSON.stringify(new URL('./coordinator.mjs',import.meta.url).href)};
+        import {DockerCoordinator} from ${JSON.stringify(new URL('./coordinator-docker.mjs',import.meta.url).href)};
+        const driver=new DockerCoordinator(${JSON.stringify(settings)});
+        driver.check=()=>({isolatedFixture:true});
+        driver.images=()=>{};
+        const args=[process.env.TEST_STATE,${JSON.stringify(manifest)},'unused','unused',${JSON.stringify(root)},driver];
+        const first=backupRelease(...args);
+        assert.equal(first.state.operation.phase,'backup_ready');
+        const before=fs.readFileSync(process.env.TEST_STATE+'/state.json','utf8');
+        const second=backupRelease(...args);
+        assert.equal(second.backupPath,first.backupPath);
+        assert.equal(fs.readFileSync(process.env.TEST_STATE+'/state.json','utf8'),before);
+        console.log(JSON.stringify({phase:second.state.operation.phase,path:second.backupPath}));
+      `},encoding:'utf8',timeout:150000,maxBuffer:1024*1024,
+    })
+    assert.equal(coordinated.status,0,'Isolated coordinated backup/restore failed')
+    const coordinatedResult=JSON.parse(coordinated.stdout)
+    assert.equal(coordinatedResult.phase,'backup_ready')
+    assert.equal(verifyBackup(coordinatedResult.path,driver).project,project)
+    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test'),'')
+    assert.equal(docker('volume','ls','-q','--filter','label=pizza.backup-test'),'')
     assert.equal(docker('exec',pg,'psql','-U','postgres','-Atc','SELECT count(*) FROM backup_fixture'),'1')
     // Source object is still readable after the backup and isolated restore.
     docker('start',minio);await ready(['exec',minio,'curl','-fsS','http://127.0.0.1:9000/minio/health/live'])
-    assert.equal(docker(...curl,'http://127.0.0.1:9000/backup-fixture/object'),'isolated-object-payload')
+    assert.equal(docker(...curl,'http://127.0.0.1:9000/backup-fixture/object'),'isolated-new-version')
     docker('stop','-t','20',minio)
   } finally {
     for(const id of containers.reverse()) {

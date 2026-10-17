@@ -25,13 +25,16 @@ function space(root, required, statfs = fs.statfsSync) {
   const stat = statfs(root, { bigint: true })
   ensure(stat.bavail * stat.bsize >= required, 'INSUFFICIENT_BACKUP_SPACE')
 }
-export function preflight(state, root, driver, statfs) {
+export function checkBackupReadiness(state, root, driver, statfs) {
   privateRoot(root)
   ensure(driver.config.project === state.project, 'BACKUP_PROJECT_MISMATCH')
-  ensure(state.operation?.phase === 'images_ready', 'PREFLIGHT_REQUIRES_IMAGES_READY')
   driver.inventory(false)
   driver.preflightTools()
   space(root, driver.estimate() + BigInt(driver.config.reserve_bytes), statfs)
+}
+export function preflight(state, root, driver, statfs) {
+  ensure(state.operation?.phase === 'images_ready', 'PREFLIGHT_REQUIRES_IMAGES_READY')
+  checkBackupReadiness(state, root, driver, statfs)
   const now = Date.now()
   const receipt = { schema_version: 1, project: state.project, operation_id: identity(state.operation.manifest),
     state_revision: state.revision, checked_at: new Date(now).toISOString(), expires_at: new Date(now + 900000).toISOString() }

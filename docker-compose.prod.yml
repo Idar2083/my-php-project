@@ -61,6 +61,16 @@ services:
         condition: service_healthy
 
   report-worker:
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(str_replace("\0", " ", file_get_contents("/proc/1/cmdline")) === "php artisan queue:work rabbitmq " ? 0 : 1);'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     build:
       context: .
       dockerfile: docker/php/Dockerfile
@@ -82,6 +92,16 @@ services:
         condition: service_healthy
 
   outbox-worker:
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(str_replace("\0", " ", file_get_contents("/proc/1/cmdline")) === "php artisan outbox:process --worker " ? 0 : 1);'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     build:
       context: .
       dockerfile: docker/php/Dockerfile
@@ -107,6 +127,16 @@ services:
         condition: service_healthy
 
   report-scheduler:
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(str_replace("\0", " ", file_get_contents("/proc/1/cmdline")) === "php /usr/local/bin/scheduler.php " ? 0 : 1);'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     build:
       context: .
       dockerfile: docker/php/Dockerfile

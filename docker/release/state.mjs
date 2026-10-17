@@ -36,7 +36,7 @@ export function validateState(state) {
   if (state.operation !== null) {
     fields(state.operation, ['manifest', 'phase'])
     validateManifest(state.operation.manifest)
-    requireCondition(phases.slice(0, -1).includes(state.operation.phase))
+    requireCondition([...phases.slice(0, -1), 'rolling_back', 'recovery_required'].includes(state.operation.phase))
   }
   const releases = [state.current, state.previous, state.operation?.manifest].filter(Boolean)
   for (let i = 0; i < releases.length; i++) for (let j = i + 1; j < releases.length; j++) {
@@ -63,7 +63,7 @@ export function checkCandidate(state, manifest) {
 export function begin(state, manifest) {
   checkCandidate(state, manifest)
   if (state.operation || (state.current && identity(state.current) === identity(manifest))) return structuredClone(state)
-  // Returning to a previous release needs a future explicit rollback operation.
+  // A normal release cannot silently select a previous manifest; recovery is explicit.
   requireCondition(!state.previous || identity(state.previous) !== identity(manifest))
   return validateState({ ...structuredClone(state), revision: state.revision + 1,
     operation: { manifest: structuredClone(manifest), phase: 'prepared' } })
@@ -71,7 +71,7 @@ export function begin(state, manifest) {
 
 export function advance(state, manifest, phase) {
   checkCandidate(state, manifest)
-  requireCondition(state.operation !== null)
+  requireCondition(state.operation !== null && phases.includes(state.operation.phase))
   requireCondition(phases[phases.indexOf(state.operation.phase) + 1] === phase)
   const next = structuredClone(state)
   next.revision++
@@ -81,6 +81,25 @@ export function advance(state, manifest, phase) {
     next.operation = null
   } else next.operation.phase = phase
   return validateState(next)
+}
+
+// Recovery never changes current/previous or runs reverse migrations.
+export function recoveryTransition(state, phase) {
+  validateState(state)
+  requireCondition(state.operation)
+  const from = state.operation.phase
+  requireCondition((phase === 'rolling_back' && from === 'backup_ready') ||
+    (phase === 'recovery_required' && ['migrating', 'migrated', 'starting', 'verified'].includes(from)) ||
+    (phase === 'rollback_complete' && from === 'rolling_back'))
+  const next = structuredClone(state)
+  next.revision++
+  if (phase === 'rollback_complete') next.operation = null
+  else next.operation.phase = phase
+  return validateState(next)
+}
+
+export function assertNoRecovery(directory, manifest) {
+  requireCondition(fs.lstatSync(join(directory, `recovery-${identity(manifest)}`), { throwIfNoEntry: false }) === undefined)
 }
 
 export function readState(directory) {
@@ -124,9 +143,23 @@ export function persist(directory, expected, next, evidence = {}) {
     // Only an exact no-op is allowed, after verifying the locked on-disk state.
     // Equality includes the full operation manifest, current/previous and revision.
     if (isDeepStrictEqual(expected, next)) return
-    const allowed = expected.operation
+    const recovering = ['rolling_back', 'recovery_required'].includes(next.operation?.phase) ||
+      (expected.operation?.phase === 'rolling_back' && next.operation === null)
+    const allowed = recovering ? recoveryTransition(expected, next.operation?.phase ?? 'rollback_complete') : expected.operation
       ? advance(expected, expected.operation.manifest, phases[phases.indexOf(expected.operation.phase) + 1])
       : next.operation ? begin(expected, next.operation.manifest) : expected
+    if (recovering) {
+      requireCondition(evidence.recovery)
+      const plan = JSON.parse(fs.readFileSync(evidence.recovery, 'utf8'))
+      const initial = validateState(plan.initial_state), backupState = validateState(plan.backup_state)
+      requireCondition(initial.operation && initial.project === backupState.project && backupState.operation?.phase === 'backup_ready' &&
+        identity(initial.operation.manifest) === identity(backupState.operation.manifest) &&
+        isDeepStrictEqual(initial.current, backupState.current) && isDeepStrictEqual(initial.previous, backupState.previous) &&
+        initial.revision - backupState.revision === ({ backup_ready: 0, migrating: 1, migrated: 2, starting: 3, verified: 4 }[initial.operation.phase]))
+      const expectedFromPlan = expected.operation.phase === 'rolling_back' ? recoveryTransition(initial, 'rolling_back') : initial
+      requireCondition(isDeepStrictEqual(expected, expectedFromPlan))
+      checkBackupCandidate(backupState, initial.operation.manifest, verifyFiles(plan.backup_path))
+    }
     requireCondition(isDeepStrictEqual(next, allowed))
     if (next.operation?.phase === 'quiescing') {
       verifyPreflight(evidence.preflight, expected.project, identity(expected.operation.manifest), expected.revision)
@@ -165,14 +198,14 @@ export function composeProcessEnvironment(environment, manifest) {
   return { ...result, COMPOSE_PROFILES: '', PHP_IMAGE: manifest.images.php, NGINX_IMAGE: manifest.images.nginx }
 }
 
-function checkCompose(state, manifest, bundle, runtime) {
+export function checkCompose(state, manifest, bundle, runtime, environment = process.env) {
   const result = spawnSync('docker', [
     'compose', '--project-name', state.project, '--project-directory', bundle,
     '--env-file', join(bundle, '.env'), '--env-file', runtime,
     '-f', join(bundle, 'docker-compose.yml'), '-f', join(bundle, 'docker-compose.prod.yml'),
     '-f', join(bundle, 'docker-compose.release.yml'), 'config', '--format', 'json',
   ], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 30000,
-    env: composeProcessEnvironment(process.env, manifest) })
+    env: composeProcessEnvironment(environment, manifest) })
   requireCondition(result.status === 0)
   const config = JSON.parse(result.stdout)
   requireCondition(config.name === state.project && !config.services.frontend)
@@ -184,6 +217,7 @@ function checkCompose(state, manifest, bundle, runtime) {
     requireCondition(service && service.image === (name === 'nginx' ? manifest.images.nginx : manifest.images.php))
     if (name !== 'nginx') requireCondition(service.environment.APP_ENV === 'production' && service.environment.APP_DEBUG === 'false')
   }
+  return config
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

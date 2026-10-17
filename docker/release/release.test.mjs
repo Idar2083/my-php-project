@@ -175,11 +175,15 @@ test('release Compose removes builds/frontend and preserves production runtime c
     RABBITMQ_PORT: '5672', RABBITMQ_MANAGEMENT_PORT: '15672', MINIO_PORT: '9000', MINIO_CONSOLE_PORT: '9001',
   }
   function compose(release, overrides = {}, cwd = root) {
+    const environment = { ...env, ...overrides }
+    for (const key of Object.keys(environment)) {
+      if (environment[key] === undefined) delete environment[key]
+    }
     return spawnSync('docker', [
       'compose', '--env-file', '/dev/null', '--profile', '*', '-f', 'docker-compose.yml',
       '-f', 'docker-compose.prod.yml', ...(release ? ['-f', 'docker-compose.release.yml'] : []),
       'config', '--format', 'json',
-    ], { cwd, env: { ...env, ...overrides }, encoding: 'utf8' })
+    ], { cwd, env: environment, encoding: 'utf8' })
   }
   const original = compose(false)
   const result = compose(true)
@@ -205,6 +209,8 @@ test('release Compose removes builds/frontend and preserves production runtime c
   assert.ok(Object.values(release.services).every(service => !service.build))
   assert.equal(compose(true, { PHP_IMAGE: '' }).status, 1)
   assert.equal(compose(true, { NGINX_IMAGE: '' }).status, 1)
+  assert.equal(compose(true, { PHP_IMAGE: undefined }).status, 1)
+  assert.equal(compose(true, { NGINX_IMAGE: undefined }).status, 1)
   // Only the Compose bundle is present: no app/, frontend/, Dockerfiles or source mounts.
   const bundle = mkdtempSync(join(tmpdir(), 'pizza-release-bundle-'))
   try {

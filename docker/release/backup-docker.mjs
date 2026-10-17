@@ -6,19 +6,21 @@ import { join } from 'node:path'
 import { ensure } from './backup-format.mjs'
 
 const helper = fileURLToPath(new URL('./minio-snapshot.php', import.meta.url))
+const serviceCheck = fileURLToPath(new URL('./minio-service-check.php', import.meta.url))
 export class DockerBackup {
   constructor(config) {
     this.config = config
     this.env = { PATH: process.env.PATH, HOME: process.env.HOME, DOCKER_HOST: 'unix:///var/run/docker.sock' }
   }
-  run(args, { input, output, discardOutput = false, timeout = 300000 } = {}) {
+  run(args, { input, output, discardOutput = false, timeout = 300000, environment = {} } = {}) {
+    ensure(Object.keys(environment).every(name => ['MINIO_ROOT_USER', 'MINIO_ROOT_PASSWORD'].includes(name)))
     const helperOwner = args[0] === 'run' ? randomUUID() : null
     const helperName = helperOwner ? `pizza-backup-helper-${helperOwner}` : null
     if (helperOwner) args = [args[0], '--name', helperName, '--label', `pizza.backup-helper=${helperOwner}`, ...args.slice(1)]
     const stdin = input ? fs.openSync(input, 'r') : null
     const stdout = output ? fs.openSync(output, 'wx', 0o600) : null
     try {
-      const result = spawnSync('docker', args, { env: this.env, encoding: 'utf8',
+      const result = spawnSync('docker', args, { env: { ...this.env, ...environment }, encoding: 'utf8',
         stdio: [stdin ?? 'ignore', stdout ?? (discardOutput ? 'ignore' : 'pipe'), 'pipe'], timeout, maxBuffer: 1024 * 1024 })
       if (result.status !== 0) {
         if (helperOwner) {
@@ -84,7 +86,37 @@ export class DockerBackup {
   }
   preflightTools() {
     this.pg('pg_dump --version >/dev/null; pg_dumpall --globals-only --no-role-passwords -U "$POSTGRES_USER" >/dev/null; exec pg_dump --schema-only -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null')
-    this.run(['run', '--rm', '--pull=never', '--network=none', '--read-only', '--entrypoint', 'php', this.config.utility_image, '-r', 'exit(class_exists("ZipArchive") ? 0 : 1);'])
+    this.run(['run', '--rm', '--pull=never', '--network=none', '--read-only', '--entrypoint', 'php', this.config.utility_image, '-r', 'require "/var/www/app/vendor/autoload.php"; exit(class_exists("ZipArchive") && class_exists("Aws\\\\S3\\\\S3Client") ? 0 : 1);'])
+  }
+  verifyRestoredMinio(volume, metadata, owner) {
+    const environment = { MINIO_ROOT_USER: `restore-${randomUUID()}`, MINIO_ROOT_PASSWORD: randomUUID() + randomUUID() }
+    let container
+    try {
+      container = this.run(['create', '--label', `pizza.backup-test=${owner}`, '--pull=never', '--network=none', '--read-only',
+        '--tmpfs', '/tmp:rw,nosuid,nodev', '--env', 'MINIO_ROOT_USER', '--env', 'MINIO_ROOT_PASSWORD',
+        '--mount', `type=volume,src=${volume},dst=/data`, metadata.minio.image, 'server', '/data'], { environment })
+      this.run(['start', container])
+      let ready = false
+      for (let i = 0; i < 100; i++) {
+        const result = spawnSync('docker', ['exec', container, 'curl', '-fsS', 'http://127.0.0.1:9000/minio/health/ready'], { env: this.env, stdio: 'ignore', timeout: 3000 })
+        if (result.status === 0) { ready = true; break }
+        if (!this.inspect(container).State.Running) break
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+      }
+      ensure(ready, 'RESTORED_MINIO_NOT_READY')
+      const report = JSON.parse(this.run(['run', '--rm', '--pull=never', `--network=container:${container}`, '--read-only',
+        '--tmpfs', '/tmp:rw,nosuid,nodev', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--env', 'MINIO_ROOT_USER', '--env', 'MINIO_ROOT_PASSWORD',
+        '--mount', `type=bind,src=${serviceCheck},dst=/minio-service-check.php,readonly`, '--entrypoint', 'php',
+        this.config.utility_image, '/minio-service-check.php', '/var/www/app/vendor/autoload.php'], { environment }))
+      ensure(Number.isSafeInteger(report.buckets) && Number.isSafeInteger(report.versions) && Number.isSafeInteger(report.bytes) &&
+        report.buckets >= 0 && report.versions >= 0 && report.bytes >= 0 && /^[a-f0-9]{64}$/.test(report.content_sha256))
+      return report
+    } finally {
+      if (container) {
+        ensure(this.inspect(container).Config.Labels['pizza.backup-test'] === owner)
+        this.run(['rm', '-f', container])
+      }
+    }
   }
   restore(directory, metadata) {
     const owner = randomUUID(), name = `pizza-backup-restore-${owner}`
@@ -109,6 +141,7 @@ export class DockerBackup {
         '--label', `pizza.backup-test=${owner}`, '--mount', `type=volume,src=${volume},dst=/restore`,
         '--mount', `type=bind,src=${directory},dst=/backup,readonly`, '--mount', `type=bind,src=${helper},dst=/snapshot.php,readonly`,
         '--entrypoint', 'php', this.config.utility_image, '/snapshot.php', 'restore-test'])
+      this.verifyRestoredMinio(volume, metadata, owner)
     } finally {
       if (container) { ensure(this.inspect(container).Config.Labels['pizza.backup-test'] === owner); this.run(['rm', '-f', '-v', container]) }
       if (volume) {

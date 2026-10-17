@@ -3,6 +3,7 @@ stages:
   - code-quality
   - production-integration
   - publish
+  - release
 
 workflow:
   rules:
@@ -52,6 +53,11 @@ phpstan:
     - cd /var/www/app
     - composer validate --strict
     - ./vendor/bin/phpstan analyse app routes config database
+    - |
+      # These helpers live outside the application's default quality paths.
+      for file in "$CI_PROJECT_DIR"/docker/release/*.php "$CI_PROJECT_DIR"/docker/php/scheduler.php; do
+        php -l "$file"
+      done
 
 php-cs-fixer:
   extends: .pipeline-job
@@ -153,10 +159,45 @@ frontend:
   variables:
     VITE_API_BASE_URL: /api
   script:
-    - cd "$CI_PROJECT_DIR/frontend"
+    - cd "$CI_PROJECT_DIR"
+    - node --test docker/release/published-manifest.test.mjs
+    - cd frontend
     - npm ci --no-audit --no-fund
     - npm test
     - npm run build
+
+# Daemon-free release gate: fake adapters plus Compose config only.
+release-checks:
+  extends: .pipeline-job
+  stage: code-quality
+  image: node:24-alpine
+  dependencies: []
+  before_script:
+    - apk add --no-cache util-linux docker-cli-compose
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - node --version
+    - flock --version
+    - docker compose version
+    - |
+      for file in docker/release/*.mjs; do
+        node --check "$file"
+      done
+      for file in docker/release/*.sh docker/ci/*.sh docker/php/entrypoint*.sh; do
+        sh -n "$file"
+      done
+    - |
+      node --test --test-concurrency=1 \
+        docker/release/release.test.mjs \
+        docker/release/release-tags.test.mjs \
+        docker/release/deploy.test.mjs \
+        docker/release/backup.test.mjs \
+        docker/release/backup-state.test.mjs \
+        docker/release/coordinator.test.mjs \
+        docker/release/coordinator-backup.test.mjs \
+        docker/release/release-run.test.mjs \
+        docker/release/recovery.test.mjs \
+        docker/release/minio-service.test.mjs
 
 production-config:
   extends: .pipeline-job
@@ -197,6 +238,7 @@ production-integration:
 
 publish-production:
   extends: .pipeline-job
+  resource_group: application-release-publication
   stage: publish
   image: docker:latest
   dependencies:
@@ -209,5 +251,29 @@ publish-production:
     - |
       docker image inspect "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID" "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID" --format '{{.Id}}' > reports/production-images.loaded.ids
       diff reports/production-images.loaded.ids reports/production-images.ids
+    - sh docker/ci/check-release-tags.sh
     - docker push "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID"
     - docker push "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID"
+    - docker image inspect "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID" --format '{"id":{{json .Id}},"digests":{{json .RepoDigests}}}' > reports/published-php.json
+    - docker image inspect "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID" --format '{"id":{{json .Id}},"digests":{{json .RepoDigests}}}' > reports/published-nginx.json
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - reports/production-images.ids
+      - reports/published-php.json
+      - reports/published-nginx.json
+
+release-manifest:
+  extends: .pipeline-job
+  stage: release
+  image: node:24-alpine
+  dependencies:
+    - publish-production
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - node docker/release/published-manifest.mjs reports reports/release.json
+    - node docker/release/manifest.mjs validate reports/release.json
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - reports/release.json

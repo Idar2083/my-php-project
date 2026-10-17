@@ -253,7 +253,27 @@ credentials в URL и неизвестные поля отклоняются. С
 следует получить их Registry manifest digests и передать полные ссылки как
 `PHP_IMAGE`/`NGINX_IMAGE`. Локальный `.Id` из `production-images.ids` — не Registry
 digest. Нельзя подменять ссылки на digest тегами, даже тегом pipeline.
-Генерация manifest пока не подключена к CI; publish/workflow rules не изменены.
+После успешных push job `publish-production` сохраняет только image IDs и
+RepoDigests двух образов. Следующая стадия `release`, job `release-manifest`
+на Node.js 24, получает эти artifacts и создаёт `reports/release.json`.
+Она требует совпадения IDs с образами, проверенными integration job, и ровно
+одного Registry digest для каждого ожидаемого repository. Чужие, отсутствующие,
+неоднозначные digest и локальные IDs вместо Registry references отклоняются.
+Artifact manifest сохраняется на один день; runtime secrets в него не входят.
+Версия приложения / идентификатор релиза — `pipeline_id` внутри Registry project;
+`schema_version` обозначает формат JSON, а не версию приложения. Новый релиз
+получает новый pipeline ID. Перед обоими push `check-release-tags.sh` проверяет
+отсутствие обоих тегов. Любой существующий тег (даже с теми же байтами), ошибка
+доступа или неожиданный ответ Registry блокирует публикацию. После частичного
+push нужен новый pipeline; повторная публикация этого ID намеренно запрещена.
+`resource_group: application-release-publication` сериализует publish jobs проекта.
+Защита действует для сотрудничающих CI jobs; запрет перезаписи/удаления release-тегов
+для других Registry writers нужно отдельно настроить в GitLab Registry. Не удаляйте
+эти теги для повторного использования ID. Проверка использует явный ответ Docker
+`no such manifest`; изменение формата CLI приведёт к безопасному отказу.
+Workflow rules и условия публикации образов сохранены. Ошибка любого push
+блокирует генерацию manifest; ошибка генерации оставляет образы в Registry,
+но не создаёт успешный release artifact. Такая ошибка не откатывает публикацию.
 
 Утилита требует Node.js 24+ там, где создаётся/проверяется manifest.
 Задайте `RELEASE_MANIFEST` и `RELEASE_ENV` как пути к выбранным файлам.
@@ -301,7 +321,7 @@ Manifest создаётся эксклюзивно, без времени ген
 от перезаписи, не подпись и не серверная защита релиза от изменения. Валидатор
 проверяет структуру, но не обращается к Registry и не доказывает происхождение
 образов. Связь digest с проверенными образами и SHA должен обеспечить publish job
-при последующем подключении генерации. Сохраняйте manifest вместе с тремя
+через проверенные IDs и RepoDigests после обоих push. Сохраняйте manifest вместе с тремя
 Compose-файлами из `deployment_config.git_sha`; формат версии 1 предполагает
 одинаковую архитектуру сервера и опубликованных образов.
 
@@ -327,16 +347,44 @@ COMPOSE_PROFILES= docker compose --env-file .env --env-file .env.local \
 на сервере не нужны. Runtime credentials остаются в отдельно подготовленном
 закрытом `.env.local`, не в manifest и не в artifacts.
 
+При обычном обновлении приложения запрашивайте только `pull php nginx` с теми же
+Compose/env аргументами: все PHP-сервисы используют общую ссылку. Не выполняйте
+общий `pull` для инфраструктуры. Теги PostgreSQL/Redis/RabbitMQ/MinIO сохраняются;
+их обновление — отдельная операция. Эти теги пока изменяемы, поэтому manifest
+обеспечивает точность прикладных образов, а не всей инфраструктуры.
+Для просмотра только используемых образов без environment и секретов замените
+`config --quiet` на `config --images`; четыре PHP-сервиса должны иметь digest
+`images.php`, Nginx — `images.nginx` (Compose может убрать дубликаты из списка).
+Автоматический тест ниже проверяет соответствие отдельно для каждого сервиса.
+
+Локальная сборка без запуска контейнеров и без Registry:
+
+```bash
+docker build --target prod -f docker/php/Dockerfile -t pizza-php:local-check .
+docker build --target prod -f frontend/Dockerfile -t pizza-nginx:local-check frontend
+docker run --rm --network none --entrypoint nginx pizza-nginx:local-check -t
+```
+
+Это проверка сборки, не источник Registry digest. Полная изолированная проверка
+существующих production-сборок: `node frontend/tests-production/run.js` (создаёт
+собственный временный Compose project, не использует development environment).
+Для получения реального `reports/release.json` нужны настроенный GitLab Registry,
+доступ CI и успешные обязательные стадии pipeline. Публикация загружает проверенный
+архив, сверяет IDs и не выполняет build. Не запускайте publish вручную для обхода
+проверок. До появления VPS нельзя проверить серверные pull, запуск, миграции,
+TLS/домен, восстановление и реальный deploy; эта инструкция их не выполняет.
+
 Порядок первоначальной инициализации из раздела Production сохраняется: получение
 образов вместо сборки, PHP с зависимостями, MinIO init, согласованные миграции,
 затем остальные сервисы. Миграции выполняются в `php`, следовательно используют
 тот же закреплённый образ; автоматически они не запускаются. Этот overlay
-не реализует SSH-deploy, rollback, TLS или deploy-job. Отдельные backup-команды описаны ниже.
+не реализует SSH-deploy, TLS или deploy-job. Явный rollback/recovery описан ниже. Отдельные backup-команды описаны ниже.
 
 Проверки без запуска контейнеров, миграций, Registry и локальных env-файлов:
 
 ```bash
 node --test docker/release/release.test.mjs
+node --test docker/release/published-manifest.test.mjs docker/release/release-tags.test.mjs
 ```
 
 Тесты проверяют manifest/CLI, запрет перезаписи и раскрытия входных данных при
@@ -346,8 +394,12 @@ node --test docker/release/release.test.mjs
 
 ## Состояние релизов и проверка перед deploy
 
+Сводная инструкция и действия при отказе: [Release runbook](docker/release/RUNBOOK.md).
+
 `docker/release/release.sh` поддерживает read-only `status` и `check`, а также
-описанные ниже `accept-backup` и `mark-migrating` для фиксации состояния backup.
+команды `prepare-backup` / `backup` для подготовки и проверенной offline-копии,
+а также описанные ниже `accept-backup` / `mark-migrating` для ручной фиксации
+состояния backup.
 Команды `status` и `check` не создают/изменяют состояние, не скачивают образы, не запускают
 и не останавливает сервисы, не выполняет миграции или переключение версии.
 Нужны Linux, Node.js 24+, util-linux `flock`, а для `check` — Docker CLI/Compose.
@@ -380,7 +432,7 @@ revision 0, current/previous/operation равны null. Его явная рег
 Идентичность релиза — SHA-256 нормализованных значений всех полей manifest,
 включая оба image digest. Тот же pipeline ID с изменённым manifest конфликтует
 с сохранённым релизом. Незавершённая операция допускает только свой manifest.
-Другой релиз не может молча продолжить её; автоматического recovery нет.
+Другой релиз не может молча продолжить её; явная команда rollback/recovery описана ниже.
 
 Библиотека допускает последовательные фазы:
 
@@ -389,13 +441,16 @@ prepared → images_ready → quiescing → quiesced → backup_ready
          → migrating → migrated → starting → verified → committed
 ```
 
-Это модель будущего deploy, а не реализация этих действий. `begin` того же
+Ранние фазы до `quiesced` выполняет `prepare-backup`; команда `backup` объединяет
+подготовку с созданием и проверкой копии до `backup_ready`. Команда `continue`
+выполняет миграции, запуск, health checks и фиксацию. SSH/VPS/TLS
+не реализованы. `begin` того же
 текущего релиза или той же операции не меняет состояние. Пропуск фаз, смена
 manifest в операции и неявный возврат previous запрещены. Commit обновляет
 current/previous и завершает operation одной записью. Фазы не доказывают,
-что соответствующие действия действительно выполнены: будущий orchestrator
-обязан проверять реальные сервисы и БД перед переходом. Полного журнала событий
-и процедуры восстановления данных в этом шаге нет.
+что соответствующие действия действительно выполнены: coordinator проверяет
+реальные контейнеры и evidence перед переходами, используя описанные ниже журналы.
+Автоматического восстановления рабочих данных нет; границы recovery приведены в runbook.
 
 Запись библиотеки `persist` требует открытого read-only FD 9 на каталог состояния
 и эксклюзивной `flock` на нём. Она проверяет ожидаемое старое состояние, допустимый
@@ -451,6 +506,362 @@ backup, совместимость миграций или побайтовое 
 ```bash
 node --test docker/release/release.test.mjs docker/release/deploy.test.mjs
 ```
+
+## Подготовка релиза к backup
+
+`prepare-backup` выполняет только раннюю часть release coordinator: проверку,
+получение двух закреплённых образов и остановку writers до `quiesced`.
+Команда **останавливает приложение**. Это не проверка без изменений и не полный
+production deploy; не запускайте её для текущего окружения ради теста.
+
+Для будущего согласованного релиза (все пути и настройки готовятся оператором):
+
+```sh
+(
+  set -eu
+  sh docker/release/release.sh prepare-backup "$STATE_DIRECTORY" \
+    "$RELEASE_MANIFEST" "$COMPOSE_BUNDLE" "$RUNTIME_ENV" \
+    "$BACKUP_CONFIG" "$BACKUP_ROOT"
+)
+```
+
+Нужны заранее зарегистрированный state.json, каталог состояния 0700 у пользователя
+команды, корректный manifest, три release Compose-файла и публичный `.env` в bundle,
+закрытый runtime env и существующие backup settings/root из раздела резервных
+копий. Новая установка без контейнеров и bootstrap состояния этой командой не
+создаются. При `current=null` допускается существующий baseline согласно прежнему
+backup-контракту; происхождение его данных не устанавливается автоматически.
+Побайтовое соответствие bundle Git SHA по-прежнему обеспечивает оператор.
+
+Весь процесс удерживает одну неблокирующую FD 9 / flock:
+
+1. Проверяются manifest, совместимость с состоянием, project и production Compose.
+   Проверяется существующая topology через backup inventory. Для зарегистрированного
+   current реальные PHP/Nginx image IDs должны соответствовать его digest references.
+   Неизвестные/дублирующиеся writers, paused/restarting/dead/OOM и уже завершившиеся
+   с ошибкой контейнеры запрещены до первой остановки.
+2. Сохраняется `prepared`. Через Docker pull получаются **только** PHP/Nginx digest
+   references manifest; каждый reference проверяется через локальный image inspect
+   и RepoDigests; OS/architecture должны совпасть с локальным Linux daemon.
+   Лишь после успеха обоих записывается `images_ready`.
+   PostgreSQL, MinIO и другие инфраструктурные образы не обновляются.
+3. Существующий backup preflight проверяет tools, источник и место на диске.
+   `utility_image` остаётся явно выбранным локальным PHP image ID из backup settings;
+   его инструменты проверяются прежним helper, он не обязан совпадать с candidate.
+   После preflight атомарно сохраняется закрытый `quiesce-<operation>-<revision>.json`:
+   ID/service/image/StartedAt writers, project, operation, исходная revision и SHA-256
+   конфигурации вместе с backup settings/root. Пароли и содержимое runtime env
+   в план не записываются. Валидный preflight receipt разрешает запись `quiescing`.
+4. По закреплённым container IDs останавливаются nginx, report-scheduler,
+   outbox-worker, report-worker, PHP, minio-init (если есть), затем MinIO.
+   Используются фактические Docker StopSignal/StopTimeout контейнеров, включая
+   production grace period outbox/scheduler. Перед каждой остановкой повторно
+   проверяется topology и StartedAt, после неё — реальное состояние контейнера,
+   ExitCode 0 и отсутствие OOM. Уже корректно остановленные/не запущенные created
+   контейнеры не получают повторный stop. PostgreSQL остаётся запущенным.
+5. Финальная backup inventory требует остановки всех writers, отсутствия иных
+   running writable mounts MinIO и SQL client sessions. Только затем записывается
+   `quiesced`. Создание backup, миграции, запуск новой версии и rollback не выполняются.
+
+Повтор с тем же manifest продолжает `prepared`, `images_ready` или `quiescing`.
+Успешно остановленные контейнеры не останавливаются снова; образы повторно pull
+только в незавершённой `prepared`. В `images_ready` и далее проверяется их локальное
+наличие. Потерянный локальный образ блокирует продолжение, без обращения к Registry
+во время частичной остановки. Повтор в `quiesced` заново проверяет образы, readiness,
+план и итоговую inventory, сохраняя байты/revision state.json. Уже текущий релиз
+получает только проверку конфигурации и никогда не останавливается заново.
+Поздние фазы и другой manifest отклоняются до действий adapter.
+
+При сбое preflight никто не останавливается. Сбой stop или финальной проверки
+оставляет `quiescing`; ошибка/тайм-аут Docker stop не считается подтверждением
+успешного завершения. Последующие writers не затрагиваются. После устранения
+причины повтор проверяет фактические контейнеры. Перезапуск/замена контейнера,
+изменённые runtime/backup settings/root, потерянный/повреждённый план или ненулевой
+exit/OOM блокируют автоматическое продолжение и требуют разбора оператором.
+План нельзя удалять или редактировать для обхода проверки. SIGKILL после
+успешного stop допускает продолжение с сохранённым планом. Самопроизвольное
+автоматическое восстановление state, restart/rollback и снятие блокировок отсутствуют; явный rollback описан ниже.
+
+Команда использует тот же локальный Docker socket `/var/run/docker.sock`, что
+backup; remote host/context из shell игнорируются. Registry login команда не делает:
+используется заранее подготовленный Docker config (`HOME`/`DOCKER_CONFIG`). Вывод
+Docker и ошибки с credentials наружу не передаются. Как и backup, coordinator
+требует запрета внешних writers и административных stop/start/topology изменений
+на время операции: release lock не блокирует прямой доступ к Docker/БД.
+
+Тесты работают с fake adapter/Docker и временными файлами, без Registry и
+production-сервисов; проверяют также повтор после SIGKILL и каждый stop:
+
+```sh
+node --test docker/release/coordinator.test.mjs
+```
+
+## Единый процесс подготовки и проверенного backup
+
+Команда `backup` вызывает тот же coordinator подготовки, затем существующие
+`createBackup`, `verifyBackup`, `restoreTest` и `recordVerifiedBackup` через API.
+Одна FD 9 / flock удерживается от первой проверки до фиксации `backup_ready`:
+между остановкой writers, dump, snapshot, проверкой и записью state lock не
+освобождается. Конкурирующие `release.sh` и `backup.sh` для того же каталога
+немедленно завершаются с ошибкой. Дочерние CLI backup не запускаются.
+
+```sh
+(
+  set -eu
+  sh docker/release/release.sh backup "$STATE_DIRECTORY" \
+    "$RELEASE_MANIFEST" "$COMPOSE_BUNDLE" "$RUNTIME_ENV" \
+    "$BACKUP_CONFIG" "$BACKUP_ROOT"
+)
+```
+
+Аргументы и требования к окружению совпадают с `prepare-backup`. Если подготовка
+уже достигла `quiesced`, она повторно проверяет закреплённые образы, план остановки,
+runtime/backup configuration и реальную остановку writers. Копия создаётся только
+после этих проверок. Формат backup v1 не изменён: PostgreSQL custom dump/globals,
+offline MinIO ZIP, metadata и COMPLETE, прежние права и атомарная публикация.
+
+Перед `backup_ready` обязательны контрольные суммы, PostgreSQL TOC, соответствие
+project/source release/target operation/revision, затем изолированный restore-test:
+новый PostgreSQL с восстановлением dump и отдельный MinIO с чтением версий объектов
+по S3 API. После restore ещё раз проверяются неизменность контейнеров и остановка
+всех writers. `recordVerifiedBackup` повторяет TOC/metadata/hash checks перед
+атомарным переходом. Команда никогда не возобновляет writers, не запускает новую
+версию и не выполняет миграции. PostgreSQL остаётся запущенным.
+
+Успех возвращает JSON `{ "phase": "backup_ready", "backup_path": "..." }`.
+Current/previous не меняются. Повтор уже текущего релиза не создаёт копию и не
+останавливает сервисы. Самостоятельная `prepare-backup` сохраняет прежний предел
+`quiesced`; использовать её вместо `backup` для принятой копии не требуется.
+
+ID каждой попытки — SHA-256 JSON-массива `[project, operation_id,
+quiesced_revision, attempt]`, начиная с attempt 0. Это обычный допустимый 64-hex
+backup ID, без нового формата state/metadata или изменяемого указателя на копию.
+Поэтому новый процесс после прерывания находит свою попытку детерминированно:
+
+- Готовый каталог копии всегда заново проверяется и восстанавливается; ошибка
+  блокирует процесс, без перезаписи или обхода повреждённой опубликованной копии.
+- Если есть только `.claim-ID`, ID не используется повторно. Следующая попытка
+  получает другой ID. Сохраняются reservation и оставшийся после SIGKILL partial
+  для диагностики; ручная очистка и retention не добавлены.
+- После публикации, но до `backup_ready`, повтор использует ту же готовую копию.
+  Повтор после `backup_ready` также заново выполняет verify/restore, сохраняя
+  байты state.json и revision. Для этого не требуется место под новую копию;
+  ресурсы для изолированного restore по-прежнему необходимы.
+- Отсутствующая копия в `backup_ready` запрещает продолжение без создания замены.
+  До первого принятия отсутствие готового каталога при существующей reservation
+  трактуется как незавершённая попытка: создаётся новая копия под новым ID.
+  Нестандартные/символьные ссылки вместо claim или каталога копии запрещены.
+
+Ошибка создания, verify, restore или финальной записи оставляет `quiesced`
+(при ошибке подготовки — последнюю достигнутую фазу). Если `backup_ready` уже
+был записан, ошибка повторной проверки не стирает это прежнее состояние, но
+команда завершается ненулевым кодом и никуда дальше не переходит. Для диагностики
+используйте read-only `release.sh status`, готовые каталоги, `.claim-*` и
+`.partial-*`; содержимое data files может быть чувствительным. Не удаляйте claim
+и не правьте state ради повторного использования ID. Изменения topology/StartedAt,
+конфигурации или плана остановки запрещают автоматическое продолжение.
+
+Единая команда принимает только собственные детерминированные попытки этой
+operation/revision. Копии с ручными ID по-прежнему обслуживаются существующими
+`backup.sh` и `accept-backup`; автоматический поиск произвольных чужих копий
+не выполняется. Lock не блокирует прямое административное изменение Docker/БД;
+внешние writers и изменения файлов в доверенном backup root нужно исключить.
+SIGKILL или потеря daemon могут оставить помеченные restore-ресурсы для ручного
+разбора согласно прежним ограничениям restore-test.
+
+Локальные тесты без Registry и production, с fake adapter и реальными форматными
+проверками файлов/state:
+
+```sh
+node --test docker/release/coordinator-backup.test.mjs docker/release/coordinator.test.mjs
+```
+
+## Продолжение после backup_ready
+
+Команда `continue` реализует оставшиеся фазы coordinator. Она **выполняет миграции
+и заменяет контейнеры приложения**; это не dry-run. Ниже только шаблон для будущей
+согласованной операции, не инструкция запускать deploy на текущем окружении:
+
+```sh
+(
+  set -eu
+  sh docker/release/release.sh continue "$STATE_DIRECTORY" \
+    "$RELEASE_MANIFEST" "$COMPOSE_BUNDLE" "$RUNTIME_ENV" \
+    "$BACKUP_CONFIG" "$BACKUP_ROOT"
+)
+```
+
+Первое выполнение разрешено только из `backup_ready`, полученного командой
+`backup` для того же manifest/configuration. Оно повторяет проверку/restore копии,
+проверяет локальные pinned образы и реальную topology. Pull, build, Registry login
+и обновление infrastructure images не выполняются. Ручная команда `mark-migrating`
+не заменяет эту подготовку: migrating без launch journal запрещён.
+Общая FD 9 / flock удерживается до завершения команды, включая ожидание миграций.
+
+В закрытом `launch-<operation>-<backup-ready-revision>/` атомарно сохраняются:
+
+- `plan.json`: исходное состояние, backup path, закреплённые IDs/images/config hashes
+  контейнеров, сети и fingerprint runtime/backup configuration.
+- `compose.json`: разрешённый снимок Compose со всеми runtime environment значениями.
+  **Он содержит секреты**, имеет права 0600 внутри каталога 0700 и не должен
+  попадать в Git, CI artifacts или логи. Сам plan хранит только их fingerprints.
+  Existing infrastructure images закреплены по локальным IDs. Зависимости из
+  снимка удалены: coordinator сам управляет последовательностью без неявного up.
+- Неизменяемые журналы create/start intent, созданных IDs, StartedAt сразу после наблюдаемого старта,
+  завершения миграции и очистки. Они позволяют продолжить прерванный шаг и
+  запрещают принятие изменённого/удалённого контейнера за прежний.
+
+Последовательность:
+
+1. `migrating` сохраняется до действий с БД. Отдельный именованный
+   `release-migration` создаётся из candidate PHP image с новым environment.
+   Target DB и подключения прежних PHP/workers должны совпадать с локальным
+   PostgreSQL, включённым в backup; переключение на другую БД этим шагом запрещено.
+   После readiness PostgreSQL/Redis/RabbitMQ запускается
+   `php artisan migrate --force --isolated=75 --no-ansi`. Laravel применяет свой
+   обычный порядок миграций; cache isolation lock занят другим запуском — ошибка,
+   не пропуск с успешным exit code. Контейнер не удаляется автоматически.
+2. `migrated` записывается только после наблюдаемого exit 0 без OOM/restart.
+   При SIGKILL coordinator повтор ждёт тот же контейнер либо принимает его
+   завершённый результат. Ошибочная/частичная миграция **не запускается повторно**:
+   остаются migrating и контейнер для разбора. Потеря контейнера после start intent
+   также блокирует продолжение. Тайм-аут ожидания — 300 секунд за вызов; саму
+   миграцию этот тайм-аут не убивает, следующий вызов наблюдает тот же процесс.
+3. После `starting` запускается прежний MinIO на том же томе и проверяется health
+   инфраструктуры. Затем создаётся и запускается новый PHP, проверяется PHP-FPM
+   health, `migrate:status` и read-only readiness из его реальной конфигурации:
+   PostgreSQL SELECT, Redis PING, RabbitMQ connect/close и S3 ListObjectsV2.
+   Ничего не публикуется в очереди, объекты и bucket не создаются.
+4. Только после readiness зависимостей по одному запускаются report-worker,
+   outbox-worker, scheduler, затем Nginx. Каждый этап проверяет health уже
+   подготовленных сервисов. Production health probes workers проверяют ожидаемый
+   PHP PID 1 после entrypoint; это проверка процесса, а не успешной доставки jobs.
+   HTTP ingress появляется последним, после готовности PHP/infra/workers.
+5. Проверяются health всех девяти long-running сервисов, read-only зависимости
+   и JSON-каталог через внутренний HTTP Nginx. Только затем возможны `verified`
+   и атомарный `committed`: current становится candidate, previous — прежним current.
+   Удаляется только подтверждённый завершённый migration container. После этого
+   пишется `release-succeeded.json` с событием `release_succeeded` и выводится
+   такой же success event. Формат state.json v1 и существующая фаза committed
+   сохранены; новый enum успешного состояния не вводился.
+
+Каждый повтор проверяет manifest, configuration fingerprint, backup и frozen
+snapshot. Все действия используют закрытый snapshot, а изменения исходного
+bundle/runtime/settings дополнительно блокируют процесс. Unknown/duplicate services,
+чужие labels, другие image IDs, изменения Config/HostConfig/mounts/networks,
+OOM, restart или изменение StartedAt запрещены. Docker default OomKillDisable
+`null`/`false` нормализуется; `true` и остальные отличия не игнорируются.
+Повтор уже committed релиза проверяет актуальный health и завершает только
+необходимую очистку/запись success receipt, не повторяя migrate или start.
+
+При ошибке нет success event и перехода к следующей фазе. При сбое записи commit
+сначала перечитывается состояние при повторе, без перезапуска миграции. Если commit
+уже опубликован, но очистка не удалась, current уже новый, а команда вернёт ошибку;
+повтор завершит очистку после проверок. Старые success receipts являются историей,
+а не доказательством текущего health. Не удаляйте journal и контейнер миграции
+ради автоматического повторного исполнения.
+
+Запуск сервисов не является транзакцией: при позднем отказе часть уже прошедших
+readiness сервисов может работать, состояние останется starting/verified.
+Команда continue сама не запускает откат. Явный rollback/recovery описан ниже;
+backup и journal необходимо сохранить для разбора оператором. Release lock не блокирует прямой Docker,
+SQL или внешних writers; таких изменений во время операции быть не должно.
+Секретные snapshot и исторические журналы требуют защищённого хранения/retention.
+
+Проверки без Registry и production:
+
+```sh
+node --test docker/release/release-run.test.mjs docker/release/release-readiness.test.mjs
+# Opt-in: существующий локальный production PHP image с CLI, без сети/данных приложения.
+RELEASE_RUNTIME_DOCKER_TEST=1 node --test docker/release/release-runtime-docker.test.mjs
+```
+
+Fake Docker тестирует весь переход и отказ/SIGKILL на каждом критическом шаге.
+Изолированный Docker подтверждает реальный Compose create/start/wait, environment
+с литеральным `$`, неизменность inspection после старта и PID 1 health probes.
+Его инфраструктура/миграция — контролируемые PHP fixtures, не настоящий Laravel
+upgrade. Новый readiness helper отдельно проверяется с private fake bootstrap;
+полный upgrade с реальными jobs и рабочей схемой БД требует изолированного
+стенда с candidate images, реальный production этим не проверен.
+
+
+## Rollback и recovery неудачного релиза
+
+`rollback` — отдельная явная операция под тем же FD 9 / flock. Команда принимает
+manifest **неудачного candidate**, его исходный Compose bundle/runtime и backup config.
+Следующий шаблон изменяет состояние и запускает/останавливает контейнеры; он не dry-run
+и не предназначен для запуска на текущей среде без отдельного согласования deploy:
+
+```sh
+sh docker/release/release.sh rollback "$STATE_DIRECTORY" \
+  "$RELEASE_MANIFEST" "$COMPOSE_BUNDLE" "$RUNTIME_ENV" \
+  "$BACKUP_CONFIG" "$BACKUP_ROOT"
+```
+
+Допустимые случаи:
+
+| Исходная фаза | Результат |
+| --- | --- |
+| `backup_ready`, есть `current` и сохранены прежние контейнеры | Проверка backup, `rolling_back`, запуск прежней версии, health checks, `rollback_succeeded` |
+| `migrating`, `migrated`, `starting`, `verified` | `recovery_required`, остановка проверенных writers; ненулевой код, без запуска прежней версии |
+| Уже завершённый rollback | Повторная проверка backup/health, завершение записи receipt без повторного start |
+| Нет current, backup не подтверждён, release уже committed, отсутствуют или изменены журналы/контейнеры | Отказ без запуска writers и без объявления успеха |
+
+Автоматический откат возможен **только до потенциального изменения схемы**.
+Даже failed migration или migrating без start receipt могут означать частичный DDL.
+Команда не выполняет `migrate:rollback`, reverse migrations, импорт PostgreSQL или
+распаковку MinIO в рабочие тома. Backup проверяется существующими file hashes,
+metadata/candidate/revision binding, `pg_restore --list` и реальным restore-test
+в изолированных ресурсах. Перед каждым действием повторно проверяются file hashes,
+configuration fingerprint, состояние и topology; повреждённая копия не заменяется новой.
+
+Для автоматического rollback используются только **сохранённые исходные контейнеры**
+из quiesce journal и образы current с проверенными локальными RepoDigests/platform.
+Нет pull, build, Compose up или попытки восстановить потерянный контейнер по догадке.
+Сверяются IDs/images/StartedAt, подключения к backed-up БД, Config/HostConfig/mounts,
+сети, OOM/restarts и коды завершения. Если есть launch plan, исходные descriptors
+должны точно совпадать. Новая конфигурация не применяется к старой версии.
+Сначала готовы PostgreSQL/Redis/RabbitMQ и MinIO, затем PHP и read-only dependency
+probes; workers и ingress запускаются последовательно. Используются те же health
+checks девяти сервисов и HTTP JSON-каталога, что в continue. Только после них
+операция очищается из state: current/previous остаются прежними, revision увеличивается.
+`rollback-succeeded.json` хранит событие с failed/current release IDs.
+
+Каталог `recovery-<failed-operation>/` (0700) служит durable intent ещё до смены фазы:
+prepare-backup, backup и continue для этого candidate после его появления запрещены.
+Неизменяемые plan и start/stop receipts (0600) фиксируют исходное состояние,
+backup path и fingerprints без environment/secrets. После SIGKILL повтор команды
+использует тот же план и наблюдает прежний контейнер. Удалённый, перезапущенный или
+успевший завершиться после незаписанного старта контейнер запрещено запускать заново
+вслепую. После успешного rollback новая попытка релиза должна иметь новый manifest /
+pipeline ID; удалять recovery intent ради повторного использования старого запрещено.
+
+В `recovery_required` сохраняются launch plan, backup и migration container/result.
+Сначала проверяется существующий launch journal, затем writers останавливаются
+в прежнем безопасном порядке (ingress первым, MinIO последним). Повтор продолжает
+только остановку и всегда возвращает ошибку, а не rollback success. Незавершённый
+migration process автоматически не останавливается и не перезапускается: оператору
+нужно проверить его состояние до любых ручных действий с БД. `recovery-required.json`
+с причиной `schema_may_have_changed` появляется после подтверждённой остановки writers.
+
+Ручной recovery требует диагностики миграции, выбора совместимой версии/исправления
+схемы и отдельной проверенной процедуры восстановления в изолированных ресурсах.
+Команды автоматического выхода из recovery_required здесь нет: нельзя просто править
+state.json, удалять intent или запускать старые writers над неизвестной схемой.
+При сбое preflight/проверки topology intent может существовать ещё без plan; он
+блокирует continue. При отказе stop часть writers может ещё работать: нет гарантии
+автоматического quiesce в неоднозначной среде, требуются действия оператора.
+Поздний отказ rollback также может оставить уже готовые сервисы запущенными,
+но success не публикуется. Lock не препятствует внешнему Docker/SQL и не доказывает
+отсутствие ручных изменений схемы вне coordinator. Backup/journals требуют retention.
+
+Проверки: `node --test docker/release/recovery.test.mjs`; дополнительно
+`RELEASE_RUNTIME_DOCKER_TEST=1 node --test docker/release/recovery-docker.test.mjs`.
+Fake adapter покрывает state/backup/image/health/stop/start failures и SIGKILL.
+Docker-стенд использует только локальный PHP image, уникальные labels/network и
+инертные PID 1 fixtures: проверяет stop/start/health/inspection и очистку, без
+реальной Laravel-схемы и jobs. Полное восстановление реального приложения требует
+отдельного изолированного стенда с candidate/current images и репрезентативными данными.
 
 ## Useful commands
 
@@ -525,11 +936,12 @@ npm run build
 | Job | Stage | Назначение |
 |---|---|---|
 | `build` | `build` | Сборка PHP `ci`/`prod`, публикация только CI-образа |
-| `phpstan` | `code-quality` | Composer validation и статический анализ PHP |
+| `phpstan` | `code-quality` | Composer validation, статический анализ PHP и синтаксис release helpers/scheduler |
 | `php-cs-fixer` | `code-quality` | Проверка форматирования без изменений |
 | `rector` | `code-quality` | Проверка преобразований PHP без изменений |
 | `tests` | `code-quality` | Подготовка сервисов, все PHPUnit suites и JUnit |
 | `frontend` | `code-quality` | Установка по lock-файлу, Vitest и Vite build |
+| `release-checks` | `code-quality` | Daemon-free state/manifest/backup/coordinator/recovery тесты и JS/shell syntax |
 | `production-config` | `code-quality` | Compose, frontend Docker build и Nginx config |
 | `production-integration` | `production-integration` | Изолированные HTTP-тесты и архив проверенных образов |
 | `publish-production` | `publish` | Проверка архива/IDs и публикация PHP/Nginx |
@@ -541,6 +953,31 @@ Production-образ получает локальный тег `php-build-chec
 в пространстве проекта и не публикуется. Повторный запуск `build` в том же
 pipeline обновляет его CI-тег; разные pipeline используют разные теги.
 Существующие команды PHP-проверок сохранены.
+
+`release-checks` использует Node 24 Alpine и устанавливает только CI-инструменты
+`util-linux` и `docker-cli-compose` через APK. Docker CLI нужен двум существующим
+тестам реального Compose bundle: они выполняют только `compose config`, без daemon.
+Job не объявляет Docker services, DinD или socket mounts; runner для него не должен
+предоставлять Docker socket. `flock` нужен для проверок настоящей файловой блокировки.
+Тестовые fake adapters запускаются из временного каталога, поэтому /tmp runner должен
+разрешать exec. Зависимости приложения и PHP этому job не нужны. PHP 8.4 уже находится в существующем
+CI-образе: job phpstan дополнительно выполняет `php -l` для release PHP helpers и scheduler,
+не загружая Laravel и env-файлы.
+
+Gate запускает десять test-файлов, включая release-tags: release/deploy, backup/backup-state,
+coordinator/coordinator-backup, release-run, recovery и minio-service. Покрываются
+manifest validation, допустимость переходов, повреждённые/неполные данные и backup,
+recovery intent (включая dangling symlinks), ошибки и SIGKILL, идемпотентность и
+sanitized CLI output. Lifecycle/MinIO используют fake adapters; тесты не выполняют
+реальный pull, restore или deploy. Все release `.mjs` проверяются через `node --check`,
+а release/CI/entrypoint shell-скрипты — через `sh -n`. Проверка published-manifest
+остаётся в frontend job и не дублируется новым gate.
+
+Полный Docker backup/recovery/worker набор остаётся локальным opt-in gate из runbook;
+readiness helper protocol и worker fixtures с Laravel/PHP также не входят в Node-only
+job. Их перенос потребует отдельного согласованного runner/tooling environment.
+Установка APK зависит от доступности Alpine repositories; реальный GitLab pipeline
+нужно отдельно подтвердить после фиксации всех новых release-файлов.
 
 `build` явно использует публичный `docker:latest`, а не создаваемый CI-образ.
 Начальный порядок stages (`build` → `code-quality`) не позволяет запустить
@@ -652,7 +1089,7 @@ Docker-сборка дополнительно подтверждает упак
 
 ## GitLab CI — этап 12.3, часть 4
 
-Порядок стадий: `build` → `code-quality` → `production-integration` → `publish`.
+Порядок стадий: `build` → `code-quality` → `production-integration` → `publish` → `release`.
 Все job сохраняют общие workflow/job rules. Публикация разрешена только после
 успеха всех предыдущих стадий; `needs` не используется. Job `publish-production`
 скачивает artifacts только из `production-integration` через `dependencies`,
@@ -705,7 +1142,16 @@ Registry login/push и загрузка/скачивание artifacts чере�
 только локальный результат, а не работоспособность серверного CI/CD.
 Для подтверждения этапа в GitLab необходимо проверить настройки выше,
 успешное получение CI-образа, передачу архива между job и наличие обоих
-production-тегов своего pipeline в Registry.
+production-тегов своего pipeline в Registry, затем artifact `release.json`
+с digest обоих опубликованных образов. Локальные тесты нового шага:
+
+```sh
+node --test docker/release/published-manifest.test.mjs
+```
+
+Они запускают реальные команды publish script с fake Docker, проверяют остановку
+при сбоях загрузки, проверки IDs, обоих push и записи evidence. Настоящие Registry
+login/push и серверная передача artifacts остаются непроверенными локально.
 
 ### Корректное завершение queue worker
 
@@ -790,11 +1236,13 @@ group и выходит с кодом 124. Это аварийная остан�
 операции. Зависшие не прерываемые системные вызовы могут потребовать Docker SIGKILL;
 беспроблемное завершение любых реальных операций за этот срок не гарантировано.
 
-**Полного deploy ещё нет.** Будущая процедура обязана проверить фактические
-container exit codes и OOMKilled после остановки и запретить переключение при
-124, 137 или другом ненулевом результате. Один exit code `docker compose stop`
-не доказывает успешное завершение приложения. Миграции и автоматический
-переход к следующей фазе здесь не реализованы; backup вызывается отдельно.
+**Полного deploy ещё нет.** Coordinator проверяет фактические container exit codes
+и OOMKilled после остановки и запрещает продолжение при 124, 137 или другом
+ненулевом результате. Один exit code `docker compose stop` не доказывает успешное
+завершение приложения. Supervisor сами не меняют release state; подготовка и
+проверенный backup выполняются описанными выше командами coordinator.
+Миграции и запуск новой версии выполняет отдельная команда coordinator
+`continue`, описанная выше; supervisor их не запускают.
 
 Outbox lease остаётся 5 минут; `processing_token` защищает отметки состояния
 после повторного claim, но не отменяет уже выполненный внешний эффект.
@@ -894,7 +1342,8 @@ PostgreSQL остаётся запущенным; инструменты бер�
 к project, operation ID и revision. Путь нужно сохранить только после успешной
 команды; старый receipt не заменяет неудачную проверку нового состояния.
 
-Дальнейший порядок для **будущего** release coordinator:
+Порядок release coordinator (`prepare-backup` выполняет подготовку до quiesced;
+единая команда `backup` выполняет пункты 1–5 до backup_ready):
 
 1. Под общей блокировкой выполнить preflight; при ошибке не начинать остановку.
 2. Через `persist(dir, expected, next, { preflight: receiptPath })` перейти из
@@ -907,8 +1356,9 @@ PostgreSQL остаётся запущенным; инструменты бер�
    только при совпадении source release, target operation, project и revision.
    Переход backup_ready → migrating повторно проверяет файлы и SHA-256.
    `advance()` остаётся чистой моделью; только `persist()` сохраняет переход.
-6. Лишь после этого будущий coordinator сможет запускать миграции. Самих миграций,
-   остановки/start сервисов и автоматического rollback этот инструмент не делает.
+6. После backup_ready команда `continue` выполняет миграции, запуск и проверку
+   новой версии с фиксацией релиза. Явный rollback до миграций и manual recovery после их возможного запуска описаны выше.
+   Самостоятельный `backup.sh` по-прежнему не останавливает и не запускает сервисы.
 
 Готовые команды для фиксации этих двух переходов (backup уже должен существовать):
 
@@ -932,9 +1382,11 @@ source/target release, project и исходную revision. Повтор ком
 Согласованная offline-копия MinIO **невозможна до остановки writers**. Поэтому
 preflight блокирует начало остановки, а сбой создания backup после quiesce
 блокирует дальнейшие фазы, но не отменяет уже произошедшую остановку.
-`backup.sh` держит lock на время одной команды; будущий coordinator должен
-удерживать ту же блокировку на протяжении всей операции, а не запускать
-конкурирующие CLI-команды. API модуля можно вызывать при уже удерживаемом FD 9.
+`backup.sh` держит lock на время одной команды; `prepare-backup` удерживает
+ту же блокировку на протяжении подготовки и остановки, а `release.sh backup` —
+также во время создания, проверки и restore-test копии до backup_ready. API backup
+вызывается напрямую. Будущий полный coordinator должен сохранить этот протокол
+до конца операции. API модуля можно вызывать при уже удерживаемом FD 9.
 
 После quiesce (каталоги/переменные задаёт оператор):
 
@@ -1011,9 +1463,12 @@ PostgreSQL-контейнер без сети/портов с новым tmpfs �
 
 MinIO ZIP извлекается в **новый отдельный Docker volume** с проверкой содержимого.
 Path traversal, links, special file types и перезапись извлечённых файлов запрещены.
-Это проверка восстановления файлов, не запуск production MinIO и не гарантия
-совместимости другой версии storage format. Нормализация владельца/прав и запуск
-MinIO с восстановленным backend требуют отдельной процедуры и того же image ID.
+Затем отдельный MinIO того же image ID запускается на восстановленном томе
+без внешней сети и портов. PHP helper через общий loopback namespace читает
+все версии объектов по S3 API с одноразовыми credentials, проверяет длину
+потока и возвращает только счётчики и SHA-256 содержимого. Ошибка запуска,
+готовности или чтения запрещает успешный restore-test. Совместимость другого
+storage format и production restore эта проверка не подтверждает.
 Рабочие PG/MinIO volume не используются как restore destination. Изолированные
 ресурсы имеют уникальные имена/метки и удаляются после успеха и ошибки; helper
 контейнеры также помечены `pizza.backup-helper`. SIGKILL самого инструмента или
@@ -1030,7 +1485,8 @@ BACKUP_DOCKER_TEST=1 BACKUP_TEST_PHP_IMAGE="$LOCAL_PHP_IMAGE_ID" \
 ```
 
 Docker-тест не использует текущий Compose project: создаёт свой уникальный project,
-PostgreSQL/MinIO без внешней сети и собственные volumes, тестовую таблицу и S3-объект.
+PostgreSQL/MinIO без внешней сети и собственные volumes, тестовую таблицу,
+пустой bucket, пустой объект, несколько версий и объект размером 3 MiB.
 Проверяет реальный dump/restore, отказ при работающем MinIO, cleanup после ошибки
 restore и сохранность исходных тестовых данных. Обычные unit-тесты используют
 временные файлы/fake adapter; их успех не доказывает доступность реального VPS.
