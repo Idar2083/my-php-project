@@ -19,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withCommands([
+        __DIR__ . '/../app/Modules/Auth/Infrastructure/Console',
         __DIR__ . '/../app/Modules/Report/Infrastructure/Messaging/Console',
         __DIR__ . '/../app/Shared/Infrastructure/Outbox/Console',
     ])
@@ -29,7 +30,13 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(
             prepend: [
                 SetLocale::class,
+                \App\Http\Middleware\ValidateRouteIdentifiers::class,
             ],
+        );
+
+        $middleware->prependToPriorityList(
+            \Illuminate\Routing\Middleware\SubstituteBindings::class,
+            \App\Http\Middleware\ValidateRouteIdentifiers::class,
         );
 
         $middleware->alias([

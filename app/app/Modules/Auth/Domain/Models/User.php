@@ -16,7 +16,7 @@ use Tymon\JWTAuth\Contracts\JWTSubject;
 /**
  * @property UserRole $role
  */
-#[Fillable(['name', 'email', 'password', 'role'])]
+#[Fillable(['name', 'email', 'password'])]
 #[Hidden(['password', 'remember_token'])]
 
 class User extends Authenticatable implements JWTSubject

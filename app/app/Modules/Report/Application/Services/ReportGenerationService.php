@@ -9,6 +9,7 @@ use App\Modules\Report\Application\Contracts\ReportStorage;
 use App\Modules\Report\Application\Exceptions\PermanentReportGenerationException;
 use App\Modules\Report\Domain\Enums\ReportStatus;
 use App\Modules\Report\Domain\Models\Report;
+use Illuminate\Support\Facades\Log;
 
 final readonly class ReportGenerationService
 {
@@ -81,7 +82,14 @@ final readonly class ReportGenerationService
             $report->save();
         } catch (\Throwable $exception) {
             $report->status = $exception instanceof PermanentReportGenerationException ? ReportStatus::FAILED : ReportStatus::PENDING;
-            $report->error = $exception->getMessage();
+            Log::error('Report generation failed.', [
+                'report_id' => $report->id,
+                'exception_class' => $exception::class,
+                'exception_code' => $exception->getCode(),
+                'source_file' => $exception->getFile(),
+                'source_line' => $exception->getLine(),
+            ]);
+            $report->error = 'Report generation failed.';
             $report->save();
 
             throw $exception;

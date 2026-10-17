@@ -142,6 +142,21 @@ final class DownloadReportTest extends TestCase
         $response->assertStatus(Response::HTTP_NOT_FOUND);
     }
 
+    public function test_storage_failures_return_safe_json_even_with_debug_enabled(): void
+    {
+        config(['app.debug' => true]);
+        $report = Report::factory()->create([
+            'status' => ReportStatus::COMPLETED,
+            'file_path' => 'reports/private.jsonl',
+        ]);
+        $storage = $this->mock(ReportStorage::class);
+        $storage->shouldReceive('exists')->once()->andReturnTrue();
+        $storage->shouldReceive('readStream')->once()->andThrow(new \RuntimeException('password=secret /private/path minio:9000'));
+        $this->getJson('/api/reports/' . $report->id . '/download')
+            ->assertStatus(503)
+            ->assertExactJson(['message' => __('api.report.generation_unavailable')]);
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

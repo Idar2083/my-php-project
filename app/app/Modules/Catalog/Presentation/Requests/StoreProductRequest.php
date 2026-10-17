@@ -25,7 +25,7 @@ class StoreProductRequest extends FormRequest
             'price' => ['required', 'numeric', 'min:0', 'max:' . Product::MAX_PRICE, 'regex:/^\d+(?:\.\d{1,2})?$/D'],
             'category' => ['required', 'string', 'max:255', new SupportedProductCategory()],
             'description' => ['nullable', 'string', 'max:1000'],
-            'weight' => ['required', 'numeric', 'gt:0'],
+            'weight' => ['required', 'numeric', 'min:0.001', 'max:99.999', 'decimal:0,3'],
         ];
     }
 }

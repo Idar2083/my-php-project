@@ -10,12 +10,16 @@ use App\Modules\Order\Presentation\Controllers\OrderController;
 use App\Modules\Report\Presentation\Controllers\ReportController;
 use Illuminate\Support\Facades\Route;
 
+foreach (['id', 'itemId', 'orderId', 'report'] as $parameter) {
+    Route::pattern($parameter, '[1-9]\\d*');
+}
+
 # Public routes
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/products/{id}', [ProductController::class, 'show']);
 
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:register');
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
 
 # Admin routes
 Route::middleware(['auth:api', 'admin'])->group(function (): void {

@@ -14,8 +14,8 @@ class StoreCartItemRequest extends ApiRequest
     public function rules(): array
     {
         return [
-            'product_id' => ['required', 'integer', 'exists:products,id'],
-            'quantity' => ['required', 'integer', 'min:1'],
+            'product_id' => ['required', 'bail', 'integer', 'min:1', 'max:9223372036854775807', 'exists:products,id'],
+            'quantity' => ['required', 'integer', 'min:1', 'max:30'],
         ];
     }
 }

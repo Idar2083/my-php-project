@@ -67,7 +67,7 @@ final class ReportGenerationServiceFailureTest extends TestCase
             );
 
             $this->assertSame(
-                'MinIO is unavailable.',
+                'Report generation failed.',
                 $report->error,
             );
 
