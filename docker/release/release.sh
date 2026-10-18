@@ -9,7 +9,8 @@ fail() {
 case "${1-}" in
     status) [ "$#" -eq 2 ] || fail ;;
     check) [ "$#" -eq 5 ] || fail ;;
-    prepare-backup|backup|continue|rollback) [ "$#" -eq 7 ] || fail ;;
+    bootstrap|prepare-backup|backup|continue|rollback) [ "$#" -eq 7 ] || fail ;;
+    recover) [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || fail ;;
     accept-backup|mark-migrating) [ "$#" -eq 5 ] || fail ;;
     *) fail ;;
 esac
@@ -20,6 +21,8 @@ exec 9<"$2" || fail
 flock -n -x 9 || fail
 script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 case "$1" in
+    bootstrap) exec node "$script_directory/bootstrap.mjs" "$@" ;;
+    recover) exec node "$script_directory/restore-release.mjs" "$@" ;;
     rollback) exec node "$script_directory/recovery.mjs" "$@" ;;
     continue) exec node "$script_directory/release-run.mjs" "$@" ;;
     prepare-backup|backup) exec node "$script_directory/coordinator.mjs" "$@" ;;

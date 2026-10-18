@@ -2,7 +2,7 @@ x-app-production-environment: &app-production-environment
   APP_ENV: production
   APP_DEBUG: "false"
   APP_KEY: ${APP_KEY:?Set APP_KEY for production}
-  APP_URL: ${APP_URL:-http://localhost}
+  APP_URL: ${APP_URL:?Set APP_URL for production}
   LOG_CHANNEL: stderr
   JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET for production}
   PRODUCTS_CACHE_TTL: ${PRODUCTS_CACHE_TTL}

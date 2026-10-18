@@ -27,7 +27,12 @@ export function identity(manifest) {
 }
 
 export function validateState(state) {
-  fields(state, ['schema_version', 'project', 'revision', 'current', 'previous', 'operation'])
+  fields(state, ['schema_version', 'project', 'revision', 'current', 'previous', 'operation', ...(Object.hasOwn(state, 'data') ? ['data'] : [])])
+  if (Object.hasOwn(state, 'data')) {
+    requireCondition(state.current !== null)
+    fields(state.data, ['postgres', 'minio'])
+    for (const volume of Object.values(state.data)) requireCondition(typeof volume === 'string' && /^[a-z0-9][a-z0-9_-]{1,200}$/.test(volume))
+  }
   requireCondition(state.schema_version === 1 && typeof state.project === 'string' &&
     /^[a-z0-9][a-z0-9_-]*$/.test(state.project) && state.project.trim() === state.project &&
     Number.isSafeInteger(state.revision) && state.revision >= 0)
@@ -84,17 +89,22 @@ export function advance(state, manifest, phase) {
 }
 
 // Recovery never changes current/previous or runs reverse migrations.
-export function recoveryTransition(state, phase) {
+export function recoveryTransition(state, phase, data) {
   validateState(state)
   requireCondition(state.operation)
   const from = state.operation.phase
   requireCondition((phase === 'rolling_back' && from === 'backup_ready') ||
     (phase === 'recovery_required' && ['migrating', 'migrated', 'starting', 'verified'].includes(from)) ||
-    (phase === 'rollback_complete' && from === 'rolling_back'))
+    (phase === 'rollback_complete' && from === 'rolling_back') ||
+    (phase === 'recovery_complete' && from === 'recovery_required'))
   const next = structuredClone(state)
   next.revision++
-  if (phase === 'rollback_complete') next.operation = null
+  if (['rollback_complete', 'recovery_complete'].includes(phase)) next.operation = null
   else next.operation.phase = phase
+  if (phase === 'recovery_complete') {
+    requireCondition(state.current && data)
+    next.data = structuredClone(data)
+  }
   return validateState(next)
 }
 
@@ -144,8 +154,8 @@ export function persist(directory, expected, next, evidence = {}) {
     // Equality includes the full operation manifest, current/previous and revision.
     if (isDeepStrictEqual(expected, next)) return
     const recovering = ['rolling_back', 'recovery_required'].includes(next.operation?.phase) ||
-      (expected.operation?.phase === 'rolling_back' && next.operation === null)
-    const allowed = recovering ? recoveryTransition(expected, next.operation?.phase ?? 'rollback_complete') : expected.operation
+      (['rolling_back', 'recovery_required'].includes(expected.operation?.phase) && next.operation === null)
+    const allowed = recovering ? recoveryTransition(expected, next.operation?.phase ?? (expected.operation.phase === 'recovery_required' ? 'recovery_complete' : 'rollback_complete'), next.data) : expected.operation
       ? advance(expected, expected.operation.manifest, phases[phases.indexOf(expected.operation.phase) + 1])
       : next.operation ? begin(expected, next.operation.manifest) : expected
     if (recovering) {
@@ -154,11 +164,20 @@ export function persist(directory, expected, next, evidence = {}) {
       const initial = validateState(plan.initial_state), backupState = validateState(plan.backup_state)
       requireCondition(initial.operation && initial.project === backupState.project && backupState.operation?.phase === 'backup_ready' &&
         identity(initial.operation.manifest) === identity(backupState.operation.manifest) &&
+        isDeepStrictEqual(initial.data, backupState.data) &&
         isDeepStrictEqual(initial.current, backupState.current) && isDeepStrictEqual(initial.previous, backupState.previous) &&
         initial.revision - backupState.revision === ({ backup_ready: 0, migrating: 1, migrated: 2, starting: 3, verified: 4 }[initial.operation.phase]))
-      const expectedFromPlan = expected.operation.phase === 'rolling_back' ? recoveryTransition(initial, 'rolling_back') : initial
+      const expectedFromPlan = ['rolling_back', 'recovery_required'].includes(expected.operation.phase)
+        ? recoveryTransition(initial, expected.operation.phase) : initial
       requireCondition(isDeepStrictEqual(expected, expectedFromPlan))
       checkBackupCandidate(backupState, initial.operation.manifest, verifyFiles(plan.backup_path))
+      if (expected.operation.phase === 'recovery_required' && next.operation === null) {
+        requireCondition(evidence.restored)
+        const receipt = JSON.parse(fs.readFileSync(evidence.restored, 'utf8'))
+        requireCondition(receipt.event === 'recovery_verified' && receipt.project === expected.project &&
+          receipt.operation_id === identity(expected.operation.manifest) && receipt.release_id === identity(expected.current) &&
+          receipt.revision === expected.revision && receipt.backup_path === plan.backup_path && isDeepStrictEqual(receipt.volumes, next.data))
+      }
     }
     requireCondition(isDeepStrictEqual(next, allowed))
     if (next.operation?.phase === 'quiescing') {
@@ -208,6 +227,13 @@ export function checkCompose(state, manifest, bundle, runtime, environment = pro
     env: composeProcessEnvironment(environment, manifest) })
   requireCondition(result.status === 0)
   const config = JSON.parse(result.stdout)
+  // A data recovery promotes fresh volumes atomically with state completion.
+  // All future releases must use those volumes, never the damaged originals.
+  if (state.data) for (const [name, destination] of [['postgres', '/var/lib/postgresql/data'], ['minio', '/data']]) {
+    const mounts = config.services[name]?.volumes?.filter(volume => volume.type === 'volume' && volume.target === destination)
+    requireCondition(mounts?.length === 1 && config.volumes?.[mounts[0].source])
+    config.volumes[mounts[0].source].name = state.data[name]
+  }
   requireCondition(config.name === state.project && !config.services.frontend)
   for (const service of Object.values(config.services)) {
     requireCondition(!service.build && !(service.volumes || []).some(volume => volume.type === 'bind'))

@@ -36,6 +36,9 @@ export function deploymentModel(configuration, source, images, operation) {
     } else if (source[name]) service.image = source[name].image
   }
   model.services['release-migration'] = { ...structuredClone(model.services.php),
+    // Use a shared lock that exists before the first database migration;
+    // preserve the application's cache store (including JWT blacklist data).
+    environment: { ...model.services.php.environment, CACHE_STORE: 'redis' },
     container_name: 'pizza-release-migrate-' + jsonHash([configuration.name, operation]), entrypoint: ['php'],
     command: ['artisan', 'migrate', '--force', '--isolated=75', '--no-ansi'], restart: 'no', healthcheck: { disable: true } }
   return model

@@ -14,6 +14,8 @@ import { container } from './release-test-support.mjs'
 const coordinator = new URL('./coordinator.mjs', import.meta.url).href
 const continuation = new URL('./release-run.mjs', import.meta.url).href
 const recovery = new URL('./recovery.mjs', import.meta.url).href
+const restoration = new URL('./restore-release.mjs', import.meta.url).href
+const restoreSupport = new URL('./restore-test-support.mjs', import.meta.url).href
 const support = new URL('./release-test-support.mjs', import.meta.url).href
 const manifest = create({ CI_COMMIT_SHA: 'a'.repeat(40), CI_PIPELINE_ID: '123', PHP_IMAGE: 'registry.example.test/pizza/php@sha256:' + 'b'.repeat(64), NGINX_IMAGE: 'registry.example.test/pizza/nginx@sha256:' + 'c'.repeat(64) })
 const baseline = { ...initialState('pizza-backup-test'), revision: 10, current: { ...manifest, pipeline_id: '122' } }
@@ -27,28 +29,34 @@ function execute(directory, operation = 'recoverRelease', code = '') {
       import {backupRelease} from ${JSON.stringify(coordinator)};
       import {continueRelease} from ${JSON.stringify(continuation)};
       import {recoverRelease} from ${JSON.stringify(recovery)};
+      import {restoreRelease} from ${JSON.stringify(restoration)};
+      import {FakeRestoreData} from ${JSON.stringify(restoreSupport)};
       import {FakeReleaseDriver} from ${JSON.stringify(support)};
       const directory=process.env.TEST_DIRECTORY;
       const driver=new FakeReleaseDriver(directory+'/fixture.json');
       const manifest=${JSON.stringify(manifest)};
       ${code}
-      try { await ${operation}(directory,manifest,'unused-bundle','unused-runtime',directory+'/backup',driver) }
-      catch {process.stderr.write('Release failed safely.');process.exitCode=1}
+      try { await ${operation}(directory,manifest,'unused-bundle','unused-runtime',directory+'/backup',${operation === 'restoreRelease' ? "'source-bundle','source-runtime'," : ''}driver${operation === 'restoreRelease' ? ',attempt' : ''}) }
+      catch(error) {process.stderr.write(error.message.startsWith('RESTORE_') ? error.message : 'Release failed safely.');process.exitCode=1}
     ` },
   })
 }
-async function fixture(run, password = 'public-fixture') {
+async function fixture(run, password = 'public-fixture', current = baseline.current) {
   const directory = fs.mkdtempSync(join(tmpdir(), 'pizza-release-run-'))
   try {
     fs.mkdirSync(join(directory, 'backup'), { mode: 0o700 })
-    fs.writeFileSync(join(directory, 'state.json'), JSON.stringify(baseline), { mode: 0o600 })
+    fs.writeFileSync(join(directory, 'state.json'), JSON.stringify({ ...baseline, current }), { mode: 0o600 })
     const env = { APP_ENV: 'production', APP_DEBUG: 'false', DB_CONNECTION: 'pgsql', DB_HOST: 'postgres', DB_PORT: '5432', DB_DATABASE: 'pizza', DB_USERNAME: 'pizza', DB_PASSWORD: password }
     const names = [...infrastructureServices, ...applicationServices, 'minio-init']
     const compose = { name: baseline.project, services: Object.fromEntries(names.map(name => [name, { image: name === 'nginx' ? manifest.images.nginx : manifest.images.php,
       environment: name === 'nginx' ? {} : env, healthcheck: { test: ['CMD', 'true'] }, networks: { default: null } }])), networks: { default: { name: 'pizza-backup-test_default' } } }
+    compose.services.postgres.environment = { ...env, POSTGRES_DB: 'pizza', POSTGRES_USER: 'pizza', POSTGRES_PASSWORD: password }
+    compose.services.postgres.volumes = [{ type: 'volume', source: 'pg', target: '/var/lib/postgresql/data' }]
+    compose.services.minio.volumes = [{ type: 'volume', source: 'files', target: '/data' }]
+    compose.volumes = { pg: { name: 'pizza-backup-test_pg' }, files: { name: 'pizza-backup-test_files' } }
     fs.writeFileSync(join(directory, 'fixture.json'), JSON.stringify({ calls: [], stops: [], counter: 100, compose,
-      containers: Object.fromEntries(names.map((name, index) => [name, { ...container(name, compose.services[name], index + 1), Image: applicationServices.includes(name) ? 'sha256:' + (name === 'nginx' ? 'c' : 'b').repeat(64) : 'sha256:' + 'e'.repeat(64) }])),
-      writers: writerOrder.map((service, index) => ({ id: (names.indexOf(service) + 1).toString(16).padStart(64, '0'), service, image: 'sha256:' + (applicationServices.includes(service) ? (service === 'nginx' ? 'c' : 'b') : 'e').repeat(64), started_at: 'initial', running: true, exit_code: 0, oom: false })) }))
+      containers: Object.fromEntries(names.map((name, index) => [name, { ...container(name, compose.services[name], index + 1), Image: applicationServices.includes(name) ? 'sha256:' + current.images[name === 'nginx' ? 'nginx' : 'php'].split('@sha256:')[1] : 'sha256:' + 'e'.repeat(64) }])),
+      writers: writerOrder.map((service, index) => ({ id: (names.indexOf(service) + 1).toString(16).padStart(64, '0'), service, image: applicationServices.includes(service) ? 'sha256:' + current.images[service === 'nginx' ? 'nginx' : 'php'].split('@sha256:')[1] : 'sha256:' + 'e'.repeat(64), started_at: 'initial', running: true, exit_code: 0, oom: false })) }))
     const result = execute(directory, 'backupRelease')
     assert.equal(result.status, 0, result.stderr)
     change(directory, { calls: [] })
@@ -356,4 +364,164 @@ test('a dangling operation receipt is rejected rather than treated as absent', (
   fs.symlinkSync(join(directory, 'missing-receipt'), join(directory, 'started-php.json'))
   const runtime = new ReleaseRuntime({}, directory, {})
   assert.throws(() => runtime.read('started-php'))
+}))
+
+const restoreCode = "const attempt=1;const settings=directory+'/restore-original-settings.json';if(!fs.existsSync(settings))fs.writeFileSync(settings,JSON.stringify(driver.backup.config));driver.backup.config=JSON.parse(fs.readFileSync(settings));driver.restoreData=(path,plan)=>new FakeRestoreData(driver,path,plan);"
+function failedUpgrade(directory, failure = 'api') {
+  change(directory, { fail: failure, restoreMode: true })
+  assert.equal(execute(directory, 'continueRelease').status, 1)
+  change(directory, { fail: null, calls: [] })
+}
+
+test('data recovery restores backup before old images start, publishes volume mapping only after readiness, and is idempotent', () => fixture(directory => {
+  failedUpgrade(directory)
+  const result = execute(directory, 'restoreRelease', restoreCode)
+  assert.equal(result.status, 0, JSON.stringify({ error: result.error?.code, stderr: result.stderr, calls: read(directory).calls.slice(-12), phase: state(directory).operation?.phase }))
+  const stored = state(directory), calls = read(directory).calls
+  assert.deepEqual(stored.current, baseline.current)
+  assert.deepEqual(stored.previous, baseline.previous)
+  assert.equal(stored.operation, null)
+  assert.match(stored.data.postgres, /^pizza-recovered-/)
+  assert.ok(calls.indexOf('restore-database') < calls.indexOf('create:postgres'))
+  assert.ok(calls.indexOf('restore-files') < calls.indexOf('start:php'))
+  assert.ok(calls.indexOf('dependencies') < calls.indexOf('start:nginx'))
+  const root = join(recoveryFolder(directory), 'restore')
+  assert.equal(JSON.parse(fs.readFileSync(join(root, 'backup-settings.json'))).postgres_container, read(directory).containers.postgres.Id)
+  assert.equal(fs.readFileSync(join(root, 'plan.json'), 'utf8').includes('public-fixture'), false)
+  const bytes = fs.readFileSync(join(directory, 'state.json'), 'utf8')
+  change(directory, { calls: [] })
+  const retry = execute(directory, 'restoreRelease', restoreCode)
+  assert.equal(retry.status, 0, retry.stderr)
+  assert.equal(fs.readFileSync(join(directory, 'state.json'), 'utf8'), bytes)
+  assert.equal(read(directory).calls.some(call => /^(restore-database|restore-files|create:|start:)/.test(call)), false)
+}))
+
+test('terminal restore failure keeps the backup and state, blocks replay, and permits an explicit fresh attempt', () => fixture(directory => {
+  failedUpgrade(directory)
+  change(directory, { data_exit: 1 })
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  assert.equal(state(directory).operation.phase, 'recovery_required')
+  assert.equal(state(directory).data, undefined)
+  assert.equal(read(directory).calls.includes('create:postgres'), false)
+  change(directory, { data_exit: 0, calls: [] })
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  assert.equal(read(directory).calls.includes('restore-database'), false)
+  const retry = execute(directory, 'restoreRelease', restoreCode.replace('attempt=1', 'attempt=2'))
+  assert.equal(retry.status, 0, retry.stderr)
+  assert.equal(state(directory).operation, null)
+  assert.ok(fs.existsSync(join(recoveryFolder(directory), 'restore', 'data-1', 'failed.json')))
+}))
+
+test('interruption after a failed restore can finish abandon without replay, then use fresh staging', () => fixture(directory => {
+  failedUpgrade(directory)
+  change(directory, { data_exit: 1 })
+  const code = restoreCode + "const link=fs.linkSync;fs.linkSync=(a,b)=>{link(a,b);if(b.endsWith('/failed.json'))process.kill(process.pid,'SIGKILL')};"
+  assert.equal(execute(directory, 'restoreRelease', code).signal, 'SIGKILL')
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  assert.ok(fs.existsSync(join(recoveryFolder(directory), 'restore', 'data-1', 'abandoned.json')))
+  change(directory, { data_exit: 0 })
+  const result = execute(directory, 'restoreRelease', restoreCode.replace('attempt=1', 'attempt=2'))
+  assert.equal(result.status, 0, result.stderr)
+}))
+
+test('restored dependency readiness failure leaves recovery pending; repeat never imports again', () => fixture(directory => {
+  failedUpgrade(directory, 'start:php')
+  change(directory, { fail: 'dependencies' })
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  assert.equal(state(directory).operation.phase, 'recovery_required')
+  assert.equal(state(directory).data, undefined)
+  assert.equal(read(directory).calls.includes('start:nginx'), false)
+  change(directory, { fail: null, calls: [] })
+  const result = execute(directory, 'restoreRelease', restoreCode)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(read(directory).calls.some(call => call === 'restore-database' || call === 'restore-files'), false)
+}))
+
+for (const point of ['after-stop:postgres', 'after-restore-database', 'after-restore-files', 'after-create:postgres', 'after-start:postgres', 'after-start:php']) {
+  test('interrupted data recovery resumes without repeating imports or starts: ' + point, () => fixture(directory => {
+    failedUpgrade(directory)
+    change(directory, { kill: point })
+    assert.equal(execute(directory, 'restoreRelease', restoreCode).signal, 'SIGKILL')
+    change(directory, { kill: null })
+    const result = execute(directory, 'restoreRelease', restoreCode)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(read(directory).calls.filter(call => call === 'restore-database').length, 1)
+    assert.equal(read(directory).calls.filter(call => call === 'restore-files').length, 1)
+  }))
+}
+
+test('restoration never guesses while a migration is still running', () => fixture(directory => {
+  change(directory, { restoreMode: true, kill: 'after-start:release-migration' })
+  assert.equal(execute(directory, 'continueRelease').signal, 'SIGKILL')
+  change(directory, { kill: null, calls: [] })
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  assert.equal(read(directory).calls.includes('restore-database'), false)
+  assert.equal(state(directory).operation.phase, 'recovery_required')
+}))
+
+test('unbacked queued messages block recovery rather than being purged or replayed against restored data', () => fixture(directory => {
+  failedUpgrade(directory)
+  change(directory, { queued: true })
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  assert.equal(read(directory).calls.includes('restore-database'), false)
+  assert.equal(state(directory).operation.phase, 'recovery_required')
+}))
+
+test('restored data cannot be committed without matching container/readiness evidence', () => fixture(directory => {
+  failedUpgrade(directory)
+  change(directory, { fail: 'dependencies' })
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  const value = read(directory);value.fail = null;value.containers.postgres.Id = 'f'.repeat(64);change(directory, value)
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  assert.equal(state(directory).operation.phase, 'recovery_required')
+  assert.equal(state(directory).data, undefined)
+}))
+
+test('state persistence refuses recovery completion without restored/readiness evidence', () => fixture(directory => {
+  failedUpgrade(directory)
+  change(directory, { fail: 'dependencies' })
+  assert.equal(execute(directory, 'restoreRelease', restoreCode).status, 1)
+  const module = new URL('./state.mjs', import.meta.url).href
+  const code = restoreCode + "const {persist,recoveryTransition}=await import(" + JSON.stringify(module) + ");const s=JSON.parse(fs.readFileSync(directory+'/state.json'));persist(directory,s,recoveryTransition(s,'recovery_complete',{postgres:'unverified-pg',minio:'unverified-minio'}));"
+  assert.equal(execute(directory, 'restoreRelease', code).status, 1)
+  assert.equal(state(directory).operation.phase, 'recovery_required')
+  assert.equal(state(directory).data, undefined)
+}))
+
+const older = { ...baseline.current, images: { php: manifest.images.php.replace('b'.repeat(64), 'd'.repeat(64)),
+  nginx: manifest.images.nginx.replace('c'.repeat(64), 'e'.repeat(64)) } }
+test('recovery starts the archived current manifest images rather than the failed candidate', () => fixture(directory => {
+  failedUpgrade(directory)
+  const result = execute(directory, 'restoreRelease', restoreCode)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(state(directory).current, older)
+  assert.equal(read(directory).containers.php.Image, 'sha256:' + 'd'.repeat(64))
+  assert.equal(read(directory).containers.nginx.Image, 'sha256:' + 'e'.repeat(64))
+}, 'public-fixture', older))
+
+for (const point of ['verified', 'committed']) {
+  test('interrupted recovery state publication resumes with coherent pointers: ' + point, () => fixture(directory => {
+    failedUpgrade(directory)
+    const code = restoreCode + (point === 'verified'
+      ? "const link=fs.linkSync;fs.linkSync=(a,b)=>{link(a,b);if(b.endsWith('/verified.json'))process.kill(process.pid,'SIGKILL')};"
+      : "const rename=fs.renameSync;fs.renameSync=(a,b)=>{rename(a,b);if(b.endsWith('/state.json')&&!JSON.parse(fs.readFileSync(b)).operation)process.kill(process.pid,'SIGKILL')};")
+    assert.equal(execute(directory, 'restoreRelease', code).signal, 'SIGKILL')
+    const result = execute(directory, 'restoreRelease', restoreCode)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(state(directory).operation, null)
+    assert.deepEqual(state(directory).current, baseline.current)
+    assert.equal(read(directory).calls.filter(call => call === 'restore-database').length, 1)
+  }))
+}
+
+test('recover uses the same nonblocking CLI lock as deploy and rollback', () => fixture(async directory => {
+  const holder = spawn('sh', ['-ec', 'exec 9<"$TEST_DIRECTORY";flock -n -x 9;echo locked;read done'], { env: { PATH: process.env.PATH, TEST_DIRECTORY: directory }, stdio: ['pipe', 'pipe', 'pipe'] })
+  try {
+    await new Promise((resolve, reject) => { holder.stdout.once('data', resolve);holder.once('error', reject) })
+    const result = spawnSync('sh', [fileURLToPath(new URL('./release.sh', import.meta.url)), 'recover', directory, 'unused', 'unused', 'unused', 'unused', join(directory, 'backup'), 'source', 'runtime'], { encoding: 'utf8' })
+    assert.equal(result.status, 1)
+    assert.deepEqual(read(directory).calls, [])
+  } finally {
+    const exited = new Promise(resolve => holder.once('exit', resolve));holder.stdin.end('done\n');await exited
+  }
 }))

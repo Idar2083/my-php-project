@@ -95,28 +95,22 @@ Development и production на одном хосте следует запуск
 `DB_CONNECTION=pgsql`, `DB_HOST=postgres`, `DB_PORT=5432`; согласуйте остальные
 DB-параметры с `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`.
 `APP_KEY` — постоянный ключ Laravel формата `base64:...`; храните его вне Git.
-Compose отклоняет пустые `APP_KEY` и `JWT_SECRET` до создания контейнеров.
+Compose отклоняет пустые `APP_KEY`, `JWT_SECRET` и `APP_URL` до создания контейнеров.
 `APP_URL` — внешний адрес сайта, включая схему и нестандартный порт.
 Production не читает `app/.env`: настройки передаются через Compose.
 
-При первом запуске сначала соберите образы и запустите PHP с зависимостями:
-
-```bash
-docker compose --env-file .env --env-file .env.local -f docker-compose.yml -f docker-compose.prod.yml config --quiet
-docker compose --env-file .env --env-file .env.local -f docker-compose.yml -f docker-compose.prod.yml build
-docker compose --env-file .env --env-file .env.local -f docker-compose.yml -f docker-compose.prod.yml up -d --wait php
-docker compose --env-file .env --env-file .env.local -f docker-compose.yml -f docker-compose.prod.yml run --rm minio-init
-```
-
-Только для новой БД либо согласованного обновления схемы после оценки миграций
-и резервного копирования выполните:
-
-```bash
-docker compose --env-file .env --env-file .env.local -f docker-compose.yml -f docker-compose.prod.yml exec -T php php artisan migrate --force
-```
-
-Затем `make up-prod`. Для последующих запусков подготовленного окружения
-достаточно `make up-prod`; миграции автоматически не выполняются.
+Первую установку выполняйте через `release.sh bootstrap` с проверенным digest
+manifest и release Compose bundle: [точные команды и повторы после сбоя](docker/release/RUNBOOK.md#первая-установка-на-пустом-проекте).
+Команда держит общую release-блокировку, отказывается от существующих ресурсов
+проекта, поднимает только инфраструктуру и MinIO bucket, проверяет пустую БД,
+регистрирует исходный state с current=null и использует обычные backup → continue.
+После backup/restore-test выполняются изолированные миграции, readiness и запуск
+приложения; current регистрируется только после успешных проверок.
+Production Compose требует APP_URL без fallback; только release-migration
+использует общий Redis lock до появления таблицы cache_locks. Cache store
+приложения, включая JWT blacklist, сохраняется.
+`make up-prod` не заменяет coordinator и не выполняет миграции/регистрацию релиза;
+не используйте его параллельно с release-командами или для обхода bootstrap.
 
 Production Nginx содержит собранный Vue SPA; Node.js, Vite dev server и bind
 mount исходников не нужны. `/` теперь отдаёт frontend, вложенные SPA-пути
@@ -374,11 +368,12 @@ docker run --rm --network none --entrypoint nginx pizza-nginx:local-check -t
 проверок. До появления VPS нельзя проверить серверные pull, запуск, миграции,
 TLS/домен, восстановление и реальный deploy; эта инструкция их не выполняет.
 
-Порядок первоначальной инициализации из раздела Production сохраняется: получение
-образов вместо сборки, PHP с зависимостями, MinIO init, согласованные миграции,
-затем остальные сервисы. Миграции выполняются в `php`, следовательно используют
-тот же закреплённый образ; автоматически они не запускаются. Этот overlay
-не реализует SSH-deploy, TLS или deploy-job. Явный rollback/recovery описан ниже. Отдельные backup-команды описаны ниже.
+Первая установка с этим overlay выполняется через `release.sh bootstrap` из
+[runbook](docker/release/RUNBOOK.md): подготовка исходного состояния передаёт
+работу обычным backup/continue. Миграции выполняются в отдельном одноразовом
+контейнере того же закреплённого PHP image с `--force --isolated=75`.
+Overlay не реализует SSH-deploy, TLS или deploy-job. Явный rollback/recovery
+и отдельные backup-команды описаны ниже.
 
 Проверки без запуска контейнеров, миграций, Registry и локальных env-файлов:
 
@@ -450,7 +445,7 @@ manifest в операции и неявный возврат previous запр�
 current/previous и завершает operation одной записью. Фазы не доказывают,
 что соответствующие действия действительно выполнены: coordinator проверяет
 реальные контейнеры и evidence перед переходами, используя описанные ниже журналы.
-Автоматического восстановления рабочих данных нет; границы recovery приведены в runbook.
+Явный snapshot recovery после failed upgrade выполняется командой `release.sh recover`; границы и точные команды приведены в runbook.
 
 Запись библиотеки `persist` требует открытого read-only FD 9 на каталог состояния
 и эксклюзивной `flock` на нём. Она проверяет ожидаемое старое состояние, допустимый
@@ -528,8 +523,8 @@ production deploy; не запускайте её для текущего окр
 Нужны заранее зарегистрированный state.json, каталог состояния 0700 у пользователя
 команды, корректный manifest, три release Compose-файла и публичный `.env` в bundle,
 закрытый runtime env и существующие backup settings/root из раздела резервных
-копий. Новая установка без контейнеров и bootstrap состояния этой командой не
-создаются. При `current=null` допускается существующий baseline согласно прежнему
+копий. `prepare-backup` не создаёт новую установку; для неё есть
+`release.sh bootstrap` из runbook. При `current=null` допускается существующий baseline согласно прежнему
 backup-контракту; происхождение его данных не устанавливается автоматически.
 Побайтовое соответствие bundle Git SHA по-прежнему обеспечивает оператор.
 
@@ -844,10 +839,17 @@ migration process автоматически не останавливается
 нужно проверить его состояние до любых ручных действий с БД. `recovery-required.json`
 с причиной `schema_may_have_changed` появляется после подтверждённой остановки writers.
 
-Ручной recovery требует диагностики миграции, выбора совместимой версии/исправления
-схемы и отдельной проверенной процедуры восстановления в изолированных ресурсах.
-Команды автоматического выхода из recovery_required здесь нет: нельзя просто править
-state.json, удалять intent или запускать старые writers над неизвестной схемой.
+Для явного восстановления snapshot после failed upgrade добавлен `release.sh recover`:
+[команды, предусловия и повторы](docker/release/RUNBOOK.md#snapshot-recovery-после-возможного-изменения-схемы).
+Он использует тот же lock, backup verifier, ZIP helper и release create/start/health
+протокол. PostgreSQL globals/dump с owners/ACL и MinIO восстанавливаются в новые
+тома; исходные тома и backup сохраняются. После readiness атомарно снимается
+recovery_required и сохраняется state.data. Последующие coordinator releases
+используют эти тома; ручной compose up не читает state.data и запрещён.
+Нельзя просто править state.json, удалять intent или запускать старые writers
+над неизвестной схемой. Failed restore task не перезапускается; новая явная
+попытка до promotion использует новые тома и тот же backup. Неоднозначность
+контейнеров/task/backup приводит к отказу.
 При сбое preflight/проверки topology intent может существовать ещё без plan; он
 блокирует continue. При отказе stop часть writers может ещё работать: нет гарантии
 автоматического quiesce в неоднозначной среде, требуются действия оператора.
@@ -1357,7 +1359,7 @@ PostgreSQL остаётся запущенным; инструменты бер�
    Переход backup_ready → migrating повторно проверяет файлы и SHA-256.
    `advance()` остаётся чистой моделью; только `persist()` сохраняет переход.
 6. После backup_ready команда `continue` выполняет миграции, запуск и проверку
-   новой версии с фиксацией релиза. Явный rollback до миграций и manual recovery после их возможного запуска описаны выше.
+   новой версии с фиксацией релиза. Явные rollback до миграций и snapshot recover после их возможного запуска описаны выше.
    Самостоятельный `backup.sh` по-прежнему не останавливает и не запускает сервисы.
 
 Готовые команды для фиксации этих двух переходов (backup уже должен существовать):
@@ -1458,8 +1460,10 @@ PostgreSQL-контейнер без сети/портов с новым tmpfs �
 или тестовой cluster: тест подтверждает восстановимость схемы/данных, а не точное
 восстановление production ownership, ACL, role passwords или tablespaces. Роли
 и credentials для полного аварийного восстановления нужно восстанавливать
-отдельно в чистой среде по globals/runtime configuration; такой production restore
-пока не реализован. Файл globals намеренно не содержит паролей ролей.
+в чистой среде по globals/runtime configuration. Команда recover выполняет это
+для поддерживаемой single-login-role конфигурации; дополнительные login roles и
+нестандартные tablespaces требуют отдельной процедуры. Файл globals намеренно
+не содержит паролей ролей.
 
 MinIO ZIP извлекается в **новый отдельный Docker volume** с проверкой содержимого.
 Path traversal, links, special file types и перезапись извлечённых файлов запрещены.

@@ -10,6 +10,7 @@ import { DockerBackup } from './backup-docker.mjs'
 import { preflight, createBackup, restoreTest, verifyBackup } from './backup.mjs'
 import { create } from './manifest.mjs'
 import { initialState, begin, advance } from './state.mjs'
+import { RestoreData } from './restore-data.mjs'
 
 const enabled=process.env.BACKUP_DOCKER_TEST==='1'
 const env={PATH:process.env.PATH,HOME:process.env.HOME,DOCKER_HOST:'unix:///var/run/docker.sock'}
@@ -94,6 +95,48 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
     }
     restoreTest(backup,driver)
     assert.equal(restored,true);assert.equal(copied,true);assert.equal(s3Checked,true)
+    // The production recovery adapter uses durable one-shot tasks and fresh
+    // volumes, preserving globals/owners/ACL rather than --no-owner/--no-acl.
+    const recoveryId=createHash('sha256').update(owner).digest('hex')
+    const recoveryDirectory=join(root,'data-recovery');fs.mkdirSync(recoveryDirectory,{mode:0o700})
+    const recoveredVolumes={postgres:'pizza-restored-'+owner+'-pg',minio:'pizza-restored-'+owner+'-minio'}
+    const data=new RestoreData({backup:driver},recoveryDirectory,{id:recoveryId,volumes:recoveredVolumes,
+      metadata:verifyBackup(backup,driver),backup_path:backup,utility_image:phpImage,
+      database:{name:'postgres',user:'postgres',password:'public-recovery-fixture'}})
+    data.check=()=>verifyBackup(backup,driver)
+    driver.run=originalRun
+    try {
+      let checked=false
+      driver.run=(args,options)=>{
+        if(args[0]==='stop' && driver.inspect(args[1]).Config.Labels['pizza.data-recovery']===recoveryId) {
+          const stage=args[1]
+          assert.equal(docker('exec',stage,'psql','-U','postgres','-d','postgres','-Atc','SELECT value FROM backup_fixture'),'isolated-value')
+          assert.equal(docker('exec',stage,'psql','-U','postgres','-d','postgres','-Atc',"SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname='backup_fixture'"),'postgres')
+          checked=true
+        }
+        return originalRun(args,options)
+      }
+      data.restore()
+      assert.equal(checked,true)
+      // Do not restart/import either completed one-shot task on a retry.
+      const databaseTask=data.read('completed-database'),filesTask=data.read('completed-files')
+      data.restore()
+      assert.deepEqual(data.read('completed-database'),databaseTask)
+      assert.deepEqual(data.read('completed-files'),filesTask)
+      assert.equal(docker('exec',pg,'psql','-U','postgres','-Atc','SELECT value FROM backup_fixture'),'isolated-value')
+      driver.run=originalRun
+    } finally {
+      const ids=docker('ps','-aq','--filter','label=pizza.data-recovery='+recoveryId).split(/\s+/).filter(Boolean)
+      for(const id of ids) {
+        assert.equal(JSON.parse(docker('inspect',id))[0].Config.Labels['pizza.data-recovery'],recoveryId)
+        docker('rm','-f',id)
+      }
+      const restoredVolumes=docker('volume','ls','-q','--filter','label=pizza.data-recovery='+recoveryId).split(/\s+/).filter(Boolean)
+      for(const name of restoredVolumes) {
+        assert.equal(JSON.parse(docker('volume','inspect',name))[0].Labels['pizza.data-recovery'],recoveryId)
+        docker('volume','rm',name)
+      }
+    }
     driver.run=(args,options)=>{
       if(args[0]==='exec' && args.includes('pg_restore')) throw new Error('controlled isolated restore failure')
       return originalRun(args,options)

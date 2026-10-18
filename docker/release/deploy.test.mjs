@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { create } from './manifest.mjs'
-import { advance, begin, checkCandidate, composeProcessEnvironment, identity, initialState, readState, validateState } from './state.mjs'
+import { advance, begin, checkCandidate, checkCompose, composeProcessEnvironment, identity, initialState, readState, validateState } from './state.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const moduleUrl = new URL('./state.mjs', import.meta.url).href
@@ -276,7 +276,7 @@ test('check validates the real three-file Compose bundle without a daemon or loc
     }
     fs.writeFileSync(join(directory, '.env'), '')
     const values = {
-      APP_KEY: 'public-test', JWT_SECRET: 'public-test', POSTGRES_DB: 'test', POSTGRES_USER: 'test',
+      APP_URL: 'https://pizza.example.test', APP_KEY: 'public-test', JWT_SECRET: 'public-test', POSTGRES_DB: 'test', POSTGRES_USER: 'test',
       POSTGRES_PASSWORD: 'public-test', DB_CONNECTION: 'pgsql', DB_HOST: 'postgres', DB_PORT: '5432',
       DB_DATABASE: 'test', DB_USERNAME: 'test', DB_PASSWORD: 'public-test', REDIS_PASSWORD: 'public-test',
       RABBITMQ_USER: 'test', RABBITMQ_PASSWORD: 'public-test', MINIO_ROOT_USER: 'test',
@@ -311,6 +311,11 @@ test('check validates the real three-file Compose bundle without a daemon or loc
     assert.equal(config.services.nginx.ports[0].published, values.NGINX_PORT)
     for (const name of ['postgres', 'redis', 'rabbitmq', 'minio']) assert.equal(config.services[name].ports?.length || 0, 0)
     assert.deepEqual(snapshot(), before)
+    const restoredConfig = checkCompose({ ...initialState('existing-production-project'), revision: 1, current: first,
+      data: { postgres: 'pizza-recovered-test-pg', minio: 'pizza-recovered-test-minio' } }, first, directory, runtime,
+    { PATH: directory + ':' + process.env.PATH })
+    assert.equal(restoredConfig.volumes.pg_data_prod.name, 'pizza-recovered-test-pg')
+    assert.equal(restoredConfig.volumes.minio_data_prod.name, 'pizza-recovered-test-minio')
   } finally { fs.rmSync(directory, { recursive: true }) }
 })
 

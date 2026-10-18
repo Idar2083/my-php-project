@@ -191,6 +191,7 @@ release-checks:
         docker/release/release.test.mjs \
         docker/release/release-tags.test.mjs \
         docker/release/deploy.test.mjs \
+        docker/release/bootstrap.test.mjs \
         docker/release/backup.test.mjs \
         docker/release/backup-state.test.mjs \
         docker/release/coordinator.test.mjs \
@@ -207,7 +208,7 @@ production-config:
     - cd "$CI_PROJECT_DIR"
     - |
       # Public fixtures for config validation only; never read deployment .env.local.
-      export APP_KEY=ci-compose-placeholder JWT_SECRET=ci-compose-placeholder
+      export APP_URL=https://pizza.example.test APP_KEY=ci-compose-placeholder JWT_SECRET=ci-compose-placeholder
       export POSTGRES_DB=pizza_ci POSTGRES_USER=pizza_ci POSTGRES_PASSWORD=ci-only
       export DB_CONNECTION=pgsql DB_HOST=postgres DB_PORT=5432
       export DB_DATABASE=pizza_ci DB_USERNAME=pizza_ci DB_PASSWORD=ci-only

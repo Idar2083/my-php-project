@@ -165,7 +165,7 @@ test('documented shell scenarios stop on each mandatory command failure', () => 
 test('release Compose removes builds/frontend and preserves production runtime configuration', () => {
   const env = {
     PATH: process.env.PATH, ...source, COMPOSE_PROJECT_NAME: 'pizza-release-check',
-    APP_KEY: 'public-test-only', JWT_SECRET: 'public-test-only',
+    APP_URL: 'https://pizza.example.test', APP_KEY: 'public-test-only', JWT_SECRET: 'public-test-only',
     POSTGRES_DB: 'test', POSTGRES_USER: 'test', POSTGRES_PASSWORD: 'public-test-only',
     DB_CONNECTION: 'pgsql', DB_HOST: 'postgres', DB_PORT: '5432',
     DB_DATABASE: 'test', DB_USERNAME: 'test', DB_PASSWORD: 'public-test-only',
@@ -211,6 +211,12 @@ test('release Compose removes builds/frontend and preserves production runtime c
   assert.equal(compose(true, { NGINX_IMAGE: '' }).status, 1)
   assert.equal(compose(true, { PHP_IMAGE: undefined }).status, 1)
   assert.equal(compose(true, { NGINX_IMAGE: undefined }).status, 1)
+  assert.equal(compose(true, { APP_URL: '' }).status, 1)
+  assert.equal(compose(true, { APP_URL: undefined }).status, 1)
+  for (const name of ['php', 'report-worker', 'outbox-worker', 'report-scheduler']) {
+    assert.equal(release.services[name].environment.APP_URL, env.APP_URL)
+    assert.equal(Object.hasOwn(release.services[name].environment, 'CACHE_STORE'), false)
+  }
   // Only the Compose bundle is present: no app/, frontend/, Dockerfiles or source mounts.
   const bundle = mkdtempSync(join(tmpdir(), 'pizza-release-bundle-'))
   try {
