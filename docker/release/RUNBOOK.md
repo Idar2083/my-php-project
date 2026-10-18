@@ -4,10 +4,170 @@
 ниже не являются dry-run. Локальный аудит не разрешает production deploy.
 Подробности форматов и ограничений: [README](../../README.md).
 
+## GitLab tag pipeline и SSH deploy
+
+Реализация проверяется локально с fake transport; **production deploy на VPS не
+проверен**. Покупка VPS, DNS и TLS остаются отдельной подготовкой. Формат релиза:
+`vMAJOR.MINOR.PATCH`, например `v1.2.3`, без ведущих нулей и prerelease. Это
+принятая для этого deploy политика; теги нельзя перемещать или переиспользовать.
+
+Branch/MR pipeline сохраняется. Push Git-тега допускается workflow; только push
+защищённого version-тега включает `deploy-production`. Git-тег и image tag — разные
+идентификаторы: образы по-прежнему публикуются с CI_PIPELINE_ID, manifest фиксирует
+digest, SHA и pipeline ID. Stage deploy идёт после всех проверок, интеграции,
+публикации и manifest, без `needs`, обходящих этот барьер. Deploy сериализуется
+`resource_group: production-deploy`; сервер дополнительно удерживает **тот же**
+FD 9/flock каталога state на весь backup/continue. Job старше текущего pipeline
+на сервере отклоняется. Это не сравнение semver и не механизм downgrade.
+
+### Настройки GitLab до первого тега
+
+1. Protected tags: защитить `v*`, разрешить создание только ответственным за
+   production; точный semver дополнительно проверяют job и скрипт. Не использовать
+   незакрытые правила, позволяющие другим ролям создавать те же теги.
+2. Environments: защитить environment `production` и ограничить allowed deployers.
+   YAML создаёт environment, но **не может установить его protected-права**.
+   Если тариф GitLab не предоставляет protected environments, обязательной границей
+   остаются protected tags/variables и права создания тегов; оцените эту политику
+   доступа до включения автоматического deploy.
+3. Добавить следующие project CI/CD variables. Все protected, scope `production`.
+   File variables загружаются файлами, не строковыми путями к файлам на runner.
+
+| Variable | Тип | Назначение |
+| --- | --- | --- |
+| `DEPLOY_HOST` | Variable | DNS-имя или IPv4 VPS; IPv6 этот адаптер не поддерживает |
+| `DEPLOY_PORT` | Variable | SSH port, обязателен, включая стандартный 22 |
+| `DEPLOY_USER` | Variable | Отдельный непривилегированный login, не root |
+| `DEPLOY_ROOT` | Variable | Выделенный абсолютный каталог приложения, например `/srv/pizza`; без пробелов, точек и symlinks |
+| `SSH_PRIVATE_KEY` | File | Отдельный deploy private key без passphrase; ограничить доступ, не включать debug trace |
+| `SSH_KNOWN_HOSTS` | File | Проверенные host keys именно этого VPS и порта |
+
+Не делать `ssh-keyscan` доверенным источником в deploy-job. Сверить fingerprint
+через консоль провайдера/другой доверенный канал; для нестандартного порта запись
+known_hosts должна соответствовать `[host]:port`. Host key checking обязателен;
+ключ не передаётся в argv. Masked/hidden применять там, где GitLab поддерживает
+формат значения; multiline file variable может не поддерживать masking.
+
+Для публикации сохраняются встроенные CI_REGISTRY_* variables. Для **VPS** заранее
+создать отдельный GitLab Deploy Token только с `read_registry`, выполнить login
+от имени deploy-пользователя через `--password-stdin` и защитить Docker config
+(или использовать credential helper). Эти credentials остаются на VPS; дополнительных
+registry CI variables адаптеру не нужно. Не использовать персональный admin token
+или краткоживущий CI_JOB_TOKEN как постоянный серверный login. Нужен runner с
+доступным Docker daemon, как для уже существующих build/integration jobs.
+
+### Подготовка VPS и доверенного адаптера
+
+Создать deploy-пользователя, установить Node.js 24+, util-linux flock,
+Docker/Compose и настроить доступ к локальному Docker daemon. Доступ к Docker
+фактически даёт административные возможности на хосте: выделить этот доступ
+только deploy identity. SSH key использовать только для этого приложения;
+запретить forwarding/PTY в authorized_keys (например, опция `restrict`).
+
+Оператор создаёт следующие каталоги, принадлежащие deploy-пользователю, mode 0700:
+
+```text
+DEPLOY_ROOT/
+  releases/
+  shared/
+    state/
+    backups/
+```
+
+На VPS из заранее просмотренного коммита установить **пять доверенных файлов**
+в `DEPLOY_ROOT/deploy-tools/`: `deploy-server.sh`, `deploy-server.mjs`,
+`deploy-bundle.mjs`, `manifest.mjs`, `published-manifest.mjs` из `docker/release/`.
+Адаптер не загружается и не запускается из непроверенного stdin. Обновлять эти
+файлы отдельно после review, совместимым комплектом; смена протокола требует
+обновления адаптера до следующего тега. Скрипты запускаются через sh/node,
+executable bit не требуется. Не разрешать посторонним изменять tools и каталоги.
+
+В `shared/runtime.env` (0600) вручную задать **полную** конфигурацию Compose:
+обычные параметры из корневого шаблона, NGINX_PORT, APP_URL, постоянные APP_KEY и
+JWT_SECRET, DB_*/POSTGRES_*, Redis/RabbitMQ/MinIO credentials. Это не копия `.env`
+из CI: корневой `.env`, app/.env, .env.testing и локальные overrides не доставляются.
+Не хранить runtime-секреты в CI, bundle или manifest. Подготовить ingress/TLS,
+DNS, firewall, обновление сертификата и отдельную безопасную копию backup.
+
+### Доставка, первый bootstrap и повтор
+
+CI сверяет Git-тег (включая annotated tag) с CI_COMMIT_SHA. Manifest сверяется
+с IDs/digests из evidence **этого pipeline**. Файлы Compose/coordinator берутся
+через `git show SHA:path` по фиксированному allowlist; произвольные image variables
+не являются входом deploy. SHA-256 защищает целостность передачи по аутентифицированному
+SSH, но не является отдельной цифровой подписью и не защищает от компрометации CI.
+
+JSON bundle передаётся через stdin SSH, без tar/extract и без секретов. Сервер
+проверяет checksum, identity, состав/хеши файлов, ограничения путей и ownership,
+затем атомарно публикует `releases/TAG-PIPELINE_ID`. Пустой `.env` создаётся самим
+адаптером только для совместимости интерфейса Compose; параметры берутся из
+серверного runtime.env. Повтор доставки принимает только идентичные файлы.
+
+При отсутствии `state.json` job оставляет проверенный bundle и **завершается
+ошибкой без запуска сервисов**. Первый bootstrap всегда ручной. После проверки
+bundle, проекта, runtime, Docker login и наличия infrastructure/tooling images
+оператор от имени deploy-пользователя задаёт локальные переменные (не секреты):
+
+```sh
+STATE_DIRECTORY="$DEPLOY_ROOT/shared/state"
+BACKUP_ROOT="$DEPLOY_ROOT/shared/backups"
+RUNTIME_ENV="$DEPLOY_ROOT/shared/runtime.env"
+COMPOSE_BUNDLE="$DEPLOY_ROOT/releases/$RELEASE_TAG-$RELEASE_PIPELINE_ID"
+RELEASE_MANIFEST="$COMPOSE_BUNDLE/release.json"
+sh "$COMPOSE_BUNDLE/docker/release/release.sh" bootstrap "$STATE_DIRECTORY" \
+  "$RELEASE_MANIFEST" "$COMPOSE_BUNDLE" "$RUNTIME_ENV" "$PROJECT" "$BACKUP_ROOT"
+```
+
+PROJECT — постоянное имя нового Compose проекта, RELEASE_TAG/RELEASE_PIPELINE_ID —
+идентификаторы доставленного релиза. Следовать ограничениям bootstrap ниже;
+не регистрировать существующие данные вручную. После **успешного** bootstrap
+установить его backup settings в фиксированный серверный путь:
+
+```sh
+install -m 600 "$STATE_DIRECTORY/bootstrap/backup-settings.json" \
+  "$DEPLOY_ROOT/shared/backup-settings.json"
+```
+
+Повторить только deploy-job того же pipeline: coordinator проверит current и
+readiness, не повторяя миграции. Не пересоздавать весь pipeline под тем же image
+tag: существующий preflight публикации намеренно запрещает его перезапись.
+Для следующего version-тега автоматический адаптер вызывает существующие
+`backupRelease` → `continueRelease`, эквивалентные `release.sh backup` → `continue`.
+Все прежние backup/restore-test, migration receipts, readiness и commit гарантии
+сохраняются; `current` управляется только coordinator, symlink current не вводится.
+
+### Ошибки и результат
+
+- Успех job означает подтверждённое завершение coordinator/readiness. Проверить
+  `release.sh status`, ожидаемый current/phase idle и внешний SPA/API по HTTPS.
+  Доступность публичного DNS/HTTPS job дополнительно не доказывает.
+- Ошибка до полной доставки/валидации не запускает coordinator. Частичный JSON
+  отклоняется; staging-каталог не используется как релиз. Не удалять готовые releases
+  и журналы; повторить job с теми же artifacts после исправления SSH/диска.
+- После разрыва SSH не считать remote process остановленным. Проверить status/lock;
+  повтор либо откажет из-за общей блокировки, либо продолжит сохранённые receipts.
+- Ошибка backup блокирует миграции; ошибка миграции или readiness сохраняет
+  состояние. Повтор не должен повторно запускать failed migration task.
+- Job **никогда автоматически не вызывает rollback/recover**. До миграций возможен
+  обычный rollback, после возможного изменения схемы — явный snapshot recovery
+  согласно разделам ниже, с оценкой потери изменений после backup.
+- После recovery обновить `shared/backup-settings.json` из restore/backup-settings.json
+  согласно recovery runbook; для повтора самого recovery сохранить original settings.
+- Manifest и publication evidence хранятся в GitLab artifacts 90 дней; releases,
+  source bundles и backup на сервере сохраняются отдельно, без автоматического удаления.
+  Для старого повтора с истёкшими artifacts требуется отдельная проверенная процедура,
+  не обход валидации и не произвольная подстановка digest.
+
+Локальная проверка (без SSH-соединений):
+
+```sh
+node --test docker/release/deploy-ssh.test.mjs
+```
 ## Предусловия
 
 - Linux, Node.js 24+, util-linux flock, Docker/Compose с поддержкой `!reset` и
   `!override`; доверенные PATH, Docker daemon и Compose bundle.
+
 - Для обновления существующая установка зарегистрирована корректным `state.json`;
   project и current соответствуют реальным контейнерам и manifest. Новую пустую
   установку регистрирует `bootstrap` ниже. Adoption рабочей установки не поддерживается.

@@ -212,6 +212,33 @@ http://localhost:8080
 
 (или через значение `NGINX_PORT` в `.env.local`)
 
+## Production deploy по защищённому Git-тегу
+
+Подготовлен `deploy-production`: push защищённого тега `vMAJOR.MINOR.PATCH`
+проходит существующие проверки, production-интеграцию, публикацию образов и
+manifest, затем доставляет release по SSH. Обычные branch/MR pipelines deploy
+не выполняют. Git-тег не заменяет CI_PIPELINE_ID в image tags: manifest сохраняет
+SHA, pipeline ID и registry digests. Deploy дополнительно сверяет publication
+artifacts и берёт разрешённые файлы из commit тега, без локальных env-файлов.
+
+На VPS доверенный адаптер проверяет целостность bundle и вызывает существующие
+backup/continue под общей release-блокировкой. Первый bootstrap остаётся ручным;
+автоматического destructive rollback/recovery нет. Runtime-секреты и read_registry
+Deploy Token остаются на сервере. Manifest/publication evidence сохраняются в
+GitLab 90 дней, серверные releases и backup автоматически не удаляются.
+
+**VPS ещё отсутствует; production deploy и новый job в GitLab не проверены.**
+Точные variables (`DEPLOY_HOST`, `DEPLOY_PORT`, `DEPLOY_USER`, `DEPLOY_ROOT`,
+`SSH_PRIVATE_KEY`, `SSH_KNOWN_HOSTS`), protected tags/environment, установка
+серверного адаптера, первый bootstrap и действия после сбоя описаны в
+[runbook](docker/release/RUNBOOK.md#gitlab-tag-pipeline-и-ssh-deploy).
+После покупки нужны подготовка VPS, доверенного SSH-доступа, Registry login,
+production runtime, DNS/HTTPS и проверка SPA/API. Локальная проверка без сервера:
+
+```sh
+node --test docker/release/deploy-ssh.test.mjs
+```
+
 ## Release manifest и запуск готовых образов
 
 `docker-compose.release.yml` применяется **третьим**, после `docker-compose.yml`
@@ -372,7 +399,7 @@ TLS/домен, восстановление и реальный deploy; эта 
 [runbook](docker/release/RUNBOOK.md): подготовка исходного состояния передаёт
 работу обычным backup/continue. Миграции выполняются в отдельном одноразовом
 контейнере того же закреплённого PHP image с `--force --isolated=75`.
-Overlay не реализует SSH-deploy, TLS или deploy-job. Явный rollback/recovery
+Overlay сам не реализует SSH или TLS; tag deploy-job описан в runbook. Явный rollback/recovery
 и отдельные backup-команды описаны ниже.
 
 Проверки без запуска контейнеров, миграций, Registry и локальных env-файлов:
@@ -1091,8 +1118,8 @@ Docker-сборка дополнительно подтверждает упак
 
 ## GitLab CI — этап 12.3, часть 4
 
-Порядок стадий: `build` → `code-quality` → `production-integration` → `publish` → `release`.
-Все job сохраняют общие workflow/job rules. Публикация разрешена только после
+Порядок стадий: `build` → `code-quality` → `production-integration` → `publish` → `release` → `deploy`.
+Проверки и публикация сохраняют общие job rules; deploy имеет отдельное правило защищённого version-тега. Публикация разрешена только после
 успеха всех предыдущих стадий; `needs` не используется. Job `publish-production`
 скачивает artifacts только из `production-integration` через `dependencies`,
 что не отменяет порядок stages.
@@ -1201,7 +1228,7 @@ production integration runner; сам runner запускает отдельну
 
 Эти тесты не подтверждают доставку/ack RabbitMQ, сохранность файлов отчётов,
 достаточность grace period для настоящих задач или поведение при SIGKILL.
-Остановка outbox и scheduler описана отдельно ниже; полный deploy не реализован.
+Остановка outbox и scheduler описана отдельно ниже; SSH deploy использует общий coordinator.
 
 ### Остановка outbox и scheduler
 
@@ -1238,7 +1265,7 @@ group и выходит с кодом 124. Это аварийная остан�
 операции. Зависшие не прерываемые системные вызовы могут потребовать Docker SIGKILL;
 беспроблемное завершение любых реальных операций за этот срок не гарантировано.
 
-**Полного deploy ещё нет.** Coordinator проверяет фактические container exit codes
+**VPS deploy ещё не проверен.** Подготовленный SSH job использует coordinator, который проверяет фактические container exit codes
 и OOMKilled после остановки и запрещает продолжение при 124, 137 или другом
 ненулевом результате. Один exit code `docker compose stop` не доказывает успешное
 завершение приложения. Supervisor сами не меняют release state; подготовка и
