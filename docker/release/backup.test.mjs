@@ -8,8 +8,24 @@ import test from 'node:test'
 import { create } from './manifest.mjs'
 import { advance, begin, initialState, identity } from './state.mjs'
 import { createBackup, preflight, restoreTest, verifyBackup } from './backup.mjs'
-import { digest, verifyFiles } from './backup-format.mjs'
-import { FakeBackup } from './backup-test-support.mjs'
+import { digest, verifyFiles, verifyPreflight } from './backup-format.mjs'
+import { FakeBackup, scopedBackupRun, stateEvidence } from './backup-test-support.mjs'
+import { FakeCoordinator } from './coordinator-test-support.mjs'
+
+test('backup fixture scopes created resources while preserving command options and failures', () => {
+  const calls = [], driver = { run(args, options) { calls.push({ args, options });return 'created' } }
+  const run = scopedBackupRun(driver, 'fixture-owner'), options = { discardOutput: true }
+  for (const args of [['create', 'image'], ['run', '--rm', 'image'], ['volume', 'create', 'volume']]) {
+    assert.equal(run(args, options), 'created')
+    const call = calls.at(-1)
+    assert.ok(call.args.includes('pizza.backup-test-scope=fixture-owner'))
+    assert.deepEqual(call.args.filter((_, index) => !['--label', 'pizza.backup-test-scope=fixture-owner'].includes(call.args[index])), args)
+    assert.equal(call.options, options)
+  }
+  run(['inspect', 'container'])
+  assert.deepEqual(calls.at(-1).args, ['inspect', 'container'])
+  assert.throws(() => scopedBackupRun({ run() { throw new Error('controlled') } }, 'fixture-owner')(['create', 'image']), /controlled/)
+})
 
 const manifest = create({ CI_COMMIT_SHA:'a'.repeat(40), CI_PIPELINE_ID:'123', PHP_IMAGE:'registry.example.test/p/php@sha256:'+'b'.repeat(64), NGINX_IMAGE:'registry.example.test/p/nginx@sha256:'+'c'.repeat(64) })
 function state(phase = 'quiesced') {
@@ -17,6 +33,46 @@ function state(phase = 'quiesced') {
   for (const p of ['images_ready','quiescing','quiesced']) { s=advance(s,manifest,p); if (p===phase) break }
   return s
 }
+test('synthetic coordinator keeps preflight stable across wall-clock corrections', t => fixture(root => {
+  const now = Date.UTC(2026, 0, 1)
+  t.mock.timers.enable({ apis: ['Date'], now })
+  const path = join(root, 'fixture.json')
+  fs.writeFileSync(path, JSON.stringify({ calls: [], writers: [] }))
+  const driver = new FakeCoordinator(path), value = state('images_ready')
+  const receipt = preflight(value, root, driver.backup)
+  for (const adjusted of [now - 1, now + 900000]) {
+    t.mock.timers.setTime(adjusted)
+    assert.equal(verifyPreflight(receipt, value.project, identity(manifest), value.revision).checked_at, new Date(now).toISOString())
+  }
+}))
+
+test('production preflight rejects future, expired and changed-TTL receipts', t => fixture(root => {
+  const now = Date.UTC(2026, 0, 1)
+  t.mock.timers.enable({ apis: ['Date'], now })
+  const value = state('images_ready'), receipt = preflight(value, root, new FakeBackup())
+  const verify = () => verifyPreflight(receipt, value.project, identity(manifest), value.revision)
+  assert.doesNotThrow(verify)
+  t.mock.timers.setTime(now - 1)
+  assert.throws(verify, /INVALID_BACKUP/)
+  t.mock.timers.setTime(now + 900000)
+  assert.throws(verify, /INVALID_BACKUP/)
+  t.mock.timers.setTime(now)
+  const changed = JSON.parse(fs.readFileSync(receipt, 'utf8'))
+  changed.expires_at = new Date(now + 899999).toISOString()
+  fs.writeFileSync(receipt, JSON.stringify(changed))
+  assert.throws(verify, /INVALID_BACKUP/)
+}))
+
+test('synthetic state evidence keeps preflight stable across wall-clock corrections', t => fixture(root => {
+  const now = Date.UTC(2026, 0, 1)
+  t.mock.timers.enable({ apis: ['Date'], now })
+  const value = state('images_ready')
+  const receipt = stateEvidence(root, value, advance(value, manifest, 'quiescing')).preflight
+  for (const adjusted of [now - 1, now + 900000]) {
+    t.mock.timers.setTime(adjusted)
+    assert.doesNotThrow(() => verifyPreflight(receipt, value.project, identity(manifest), value.revision))
+  }
+}))
 function fixture(run) {
   const root=fs.mkdtempSync(join(tmpdir(),'pizza-backup-unit-'))
   try { return run(root) } finally { fs.rmSync(root,{recursive:true}) }

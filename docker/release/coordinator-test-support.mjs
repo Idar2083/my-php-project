@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { FakeBackup } from './backup-test-support.mjs'
+import { FakeBackup, freezeFixtureClock } from './backup-test-support.mjs'
 import { ensure } from './backup-format.mjs'
 
 // State is persisted only in each test's private temporary directory, so a new
@@ -7,6 +7,9 @@ import { ensure } from './backup-format.mjs'
 export class FakeCoordinator {
   constructor(path) {
     this.path = path
+    // Synthetic release subprocesses must not depend on host clock corrections.
+    // Explicit health-timeout probes replace Date.now after constructing us.
+    freezeFixtureClock()
     const artifacts = new FakeBackup()
     this.backup = {
       source: artifacts.source,

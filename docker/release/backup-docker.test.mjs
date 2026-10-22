@@ -11,6 +11,7 @@ import { preflight, createBackup, restoreTest, verifyBackup } from './backup.mjs
 import { create } from './manifest.mjs'
 import { initialState, begin, advance } from './state.mjs'
 import { RestoreData } from './restore-data.mjs'
+import { scopedBackupRun } from './backup-test-support.mjs'
 
 const enabled=process.env.BACKUP_DOCKER_TEST==='1'
 const env={PATH:process.env.PATH,HOME:process.env.HOME,DOCKER_HOST:'unix:///var/run/docker.sock'}
@@ -45,6 +46,12 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
     docker('start',pg); await ready(['exec',pg,'sh','-ec','test "$(cat /proc/1/comm)" = postgres && pg_isready -U postgres'])
     docker('exec',pg,'psql','-U','postgres','-c',"CREATE TABLE backup_fixture(id int primary key, value text); INSERT INTO backup_fixture VALUES(1, 'isolated-value');")
     const volume=docker('volume','create','--label',`pizza.backup-fixture=${owner}`,'pizza-backup-source-'+owner);volumes.push(volume)
+    // Another run may be restoring on the same daemon. Its resources must
+    // neither fail our leak checks nor be removed by our restore cleanup.
+    containers.push(docker('create','--pull=never','--network=none','--label',`pizza.backup-fixture=${owner}`,
+      '--label',`pizza.backup-test=unrelated-${owner}`,'--label',`pizza.backup-test-scope=unrelated-${owner}`,'--entrypoint','true',pgImage))
+    volumes.push(docker('volume','create','--label',`pizza.backup-fixture=${owner}`,
+      '--label',`pizza.backup-test=unrelated-${owner}`,'--label',`pizza.backup-test-scope=unrelated-${owner}`,'pizza-backup-unrelated-'+owner))
     const minio=docker('create','--pull=never','--network=none','--label',`pizza.backup-fixture=${owner}`,'--label',`com.docker.compose.project=${project}`,'--label','com.docker.compose.service=minio',
       '--env','MINIO_ROOT_USER=fixtureuser','--env','MINIO_ROOT_PASSWORD=fixturepassword','--mount',`type=volume,src=${volume},dst=/data`,minioImage,'server','/data');containers.push(minio)
     docker('start',minio); await ready(['exec',minio,'curl','-fsS','http://127.0.0.1:9000/minio/health/live'])
@@ -65,6 +72,7 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
     let state=advance(begin(initialState(project),manifest),manifest,'images_ready')
     const settings={schema_version:1,project,postgres_container:pg,minio_container:minio,utility_image:phpImage,reserve_bytes:67108864}
     const driver=new DockerBackup(settings)
+    driver.run=scopedBackupRun(driver,owner)
     const receipt=preflight(state,root,driver)
     assert.ok(fs.existsSync(receipt))
     // Running MinIO must be rejected before any backup is created.
@@ -110,6 +118,7 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
       driver.run=(args,options)=>{
         if(args[0]==='stop' && driver.inspect(args[1]).Config.Labels['pizza.data-recovery']===recoveryId) {
           const stage=args[1]
+          assert.equal(driver.inspect(stage).Config.StopTimeout,30)
           assert.equal(docker('exec',stage,'psql','-U','postgres','-d','postgres','-Atc','SELECT value FROM backup_fixture'),'isolated-value')
           assert.equal(docker('exec',stage,'psql','-U','postgres','-d','postgres','-Atc',"SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname='backup_fixture'"),'postgres')
           checked=true
@@ -142,14 +151,14 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
       return originalRun(args,options)
     }
     assert.throws(()=>restoreTest(backup,driver))
-    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test'),'')
+    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
     driver.run=(args,options)=>{
       if(args.includes('/minio-service-check.php')) throw new Error('controlled S3 read failure')
       return originalRun(args,options)
     }
     assert.throws(()=>restoreTest(backup,driver))
-    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test'),'')
-    assert.equal(docker('volume','ls','-q','--filter','label=pizza.backup-test'),'')
+    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
+    assert.equal(docker('volume','ls','-q','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
     driver.run=originalRun
     // Exercise the combined coordinator with real dump/snapshot/restore, on the
     // same isolated fixtures. Only Compose/image acquisition is faked: no Registry.
@@ -162,7 +171,9 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
         import assert from 'node:assert/strict';
         import {backupRelease} from ${JSON.stringify(new URL('./coordinator.mjs',import.meta.url).href)};
         import {DockerCoordinator} from ${JSON.stringify(new URL('./coordinator-docker.mjs',import.meta.url).href)};
+        import {scopedBackupRun} from ${JSON.stringify(new URL('./backup-test-support.mjs',import.meta.url).href)};
         const driver=new DockerCoordinator(${JSON.stringify(settings)});
+        driver.backup.run=scopedBackupRun(driver.backup,${JSON.stringify(owner)});
         driver.check=()=>({isolatedFixture:true});
         driver.images=()=>{};
         const args=[process.env.TEST_STATE,${JSON.stringify(manifest)},'unused','unused',${JSON.stringify(root)},driver];
@@ -179,8 +190,8 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
     const coordinatedResult=JSON.parse(coordinated.stdout)
     assert.equal(coordinatedResult.phase,'backup_ready')
     assert.equal(verifyBackup(coordinatedResult.path,driver).project,project)
-    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test'),'')
-    assert.equal(docker('volume','ls','-q','--filter','label=pizza.backup-test'),'')
+    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
+    assert.equal(docker('volume','ls','-q','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
     assert.equal(docker('exec',pg,'psql','-U','postgres','-Atc','SELECT count(*) FROM backup_fixture'),'1')
     // Source object is still readable after the backup and isolated restore.
     docker('start',minio);await ready(['exec',minio,'curl','-fsS','http://127.0.0.1:9000/minio/health/live'])

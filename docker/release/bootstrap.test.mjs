@@ -17,13 +17,14 @@ function execute(directory, code = '') {
   return spawnSync('sh', ['-ec', 'exec 9<"$TEST_DIRECTORY";flock -n -x 9;exec node --input-type=module -e "$TEST_CODE"'], {
     encoding: 'utf8', timeout: 20000, env: { PATH: process.env.PATH, TEST_DIRECTORY: directory, TEST_CODE: `
       import fs from 'node:fs';
+      import {fixtureFailure} from ${JSON.stringify(new URL('./release-test-diagnostics.mjs', import.meta.url).href)};
       import {bootstrapRelease} from ${JSON.stringify(module)};
       import {FakeReleaseDriver} from ${JSON.stringify(support)};
       const directory=process.env.TEST_DIRECTORY, driver=new FakeReleaseDriver(directory+'/fixture.json');
       const manifest=${JSON.stringify(manifest)};
       ${code}
       try {bootstrapRelease(directory,manifest,'unused-bundle','unused-runtime',directory+'/backup',driver)}
-      catch {process.stderr.write('Bootstrap failed safely.');process.exitCode=1}
+      catch(error) {process.stderr.write(fixtureFailure(error, 'bootstrapRelease'));process.exitCode=1}
     ` },
   })
 }

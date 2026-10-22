@@ -23,6 +23,7 @@ function execute(directory, operation = 'continueRelease', code = '') {
   return spawnSync('sh', ['-ec', 'exec 9<"$TEST_DIRECTORY";flock -n -x 9;exec node --input-type=module -e "$TEST_CODE"'], {
     encoding: 'utf8', timeout: 20000, env: { PATH: process.env.PATH, TEST_DIRECTORY: directory, TEST_CODE: `
       import fs from 'node:fs';
+      import {fixtureFailure} from ${JSON.stringify(new URL('./release-test-diagnostics.mjs', import.meta.url).href)};
       import {backupRelease} from ${JSON.stringify(coordinator)};
       import {continueRelease} from ${JSON.stringify(continuation)};
       import {FakeReleaseDriver} from ${JSON.stringify(support)};
@@ -31,7 +32,7 @@ function execute(directory, operation = 'continueRelease', code = '') {
       const manifest=${JSON.stringify(manifest)};
       ${code}
       try { await ${operation}(directory,manifest,'unused-bundle','unused-runtime',directory+'/backup',driver) }
-      catch {process.stderr.write('Release failed safely.');process.exitCode=1}
+      catch(error) {process.stderr.write(fixtureFailure(error, '${operation}'));process.exitCode=1}
     ` },
   })
 }

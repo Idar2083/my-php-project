@@ -178,7 +178,11 @@ release-checks:
     - apk add --no-cache util-linux docker-cli-compose openssh-client
   script:
     - cd "$CI_PROJECT_DIR"
-    - node --version
+    - 'printf "Release checks SHA=%s pipeline=%s job=%s\n" "$CI_COMMIT_SHA" "$CI_PIPELINE_ID" "$CI_JOB_ID"'
+    - node -p 'JSON.stringify({node:process.version,platform:process.platform,arch:process.arch})'
+    - cat /etc/alpine-release
+    - busybox | head -n 1
+    - df -Pk /tmp "$CI_PROJECT_DIR"
     - flock --version
     - docker compose version
     - |
@@ -191,6 +195,7 @@ release-checks:
     - |
       node --test --test-concurrency=1 \
         docker/release/release.test.mjs \
+        docker/release/release-test-diagnostics.test.mjs \
         docker/release/release-tags.test.mjs \
         docker/release/deploy.test.mjs \
         docker/release/bootstrap.test.mjs \

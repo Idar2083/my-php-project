@@ -36,6 +36,7 @@ function claims(directory) { return fs.readdirSync(join(directory, 'backup')).fi
 function options(directory, code = '') {
   return { encoding: 'utf8', env: { PATH: process.env.PATH, TEST_DIRECTORY: directory, TEST_CODE: `
     import fs from 'node:fs';
+    import {fixtureFailure} from ${JSON.stringify(new URL('./release-test-diagnostics.mjs', import.meta.url).href)};
     import {backupRelease,prepareBackup} from ${JSON.stringify(coordinator)};
     import {FakeCoordinator} from ${JSON.stringify(fake)};
     const directory=process.env.TEST_DIRECTORY;
@@ -45,7 +46,7 @@ function options(directory, code = '') {
     try {
       const result=backupRelease(directory,manifest,'unused-bundle','unused-runtime',directory+'/backup',driver);
       fs.writeFileSync(directory+'/result.json',JSON.stringify(result));
-    } catch { process.stderr.write('Backup failed safely.');process.exitCode=1 }
+    } catch(error) {process.stderr.write(fixtureFailure(error, 'backupRelease'));process.exitCode=1}
   ` } }
 }
 const shell = ['-ec', 'exec 9<"$TEST_DIRECTORY";flock -n -x 9;exec node --input-type=module -e "$TEST_CODE"']
@@ -114,8 +115,9 @@ for (const failure of ['restore', 'state-write', 'post-restore-toc']) {
       : failure === 'post-restore-toc'
         ? `const restore=driver.backup.restore;driver.backup.restore=(...args)=>{restore(...args);const value=driver.read();value.fail='toc';driver.write(value)};` : ''
     if (failure === 'restore') change(directory, { fail: 'restore' })
-    assert.equal(execute(directory, code).status, 1)
-    assert.equal(read(directory, 'state.json').operation.phase, 'quiesced')
+    const result = execute(directory, code)
+    assert.equal(result.status, 1, result.stderr)
+    assert.equal(read(directory, 'state.json').operation.phase, 'quiesced', result.stderr)
     assert.equal(copies(directory).length, 1)
     const copy = copies(directory)
     change(directory, { fail: null, calls: [], space_failure: true })
@@ -255,8 +257,9 @@ for (const changeAt of ['after-verification', 'runtime-during-restore']) {
     const code = changeAt === 'after-verification'
       ? `const toc=driver.backup.toc;let count=0;driver.backup.toc=(...args)=>{toc(...args);if(++count===2){const value=driver.read();value.writers[0].started_at='restarted';driver.write(value)}};`
       : `const restore=driver.backup.restore;driver.backup.restore=(...args)=>{restore(...args);const value=driver.read();value.configuration=2;driver.write(value)};`
-    assert.equal(execute(directory, code).status, 1)
-    assert.equal(read(directory, 'state.json').operation.phase, 'quiesced')
+    const result = execute(directory, code)
+    assert.equal(result.status, 1, result.stderr)
+    assert.equal(read(directory, 'state.json').operation.phase, 'quiesced', result.stderr)
     assert.equal(copies(directory).length, 1)
     assert.deepEqual(read(directory).stops, writerOrder)
   }))

@@ -76,7 +76,9 @@ export class RestoreData extends ReleaseRuntime {
     const contents = Object.entries(env).map(([key, value]) => { ensure(typeof value === 'string' && value && !/[\r\n\0]/.test(value), 'RESTORE_ENV_UNSUPPORTED');return key + '=' + value + '\n' }).join('')
     if (fs.existsSync(envPath)) ensure(fs.readFileSync(envPath, 'utf8') === contents, 'RESTORE_ENV_CHANGED')
     else fs.writeFileSync(envPath, contents, { flag: 'wx', mode: 0o600, flush: true })
-    const pgArgs = ['--network=none', '--env-file', envPath, '--mount', 'type=volume,src=' + p.volumes.postgres + ',dst=/var/lib/postgresql/data']
+    // A staged database must finish its shutdown/checkpoint. Do not inherit a
+    // daemon default as short as one second and then accept a forced stop.
+    const pgArgs = ['--stop-timeout=30', '--network=none', '--env-file', envPath, '--mount', 'type=volume,src=' + p.volumes.postgres + ',dst=/var/lib/postgresql/data']
     if (!this.read('data-restored')) {
       const pg = this.task('postgres', p.metadata.postgres.image, 'docker-entrypoint.sh', ['postgres'], pgArgs)
       ensure(pg.State.Running, 'RESTORE_POSTGRES_STOPPED')

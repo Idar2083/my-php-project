@@ -36,6 +36,7 @@ function execute(directory, code = '') {
   return spawnSync('sh', ['-ec', 'exec 9<"$TEST_DIRECTORY"; flock -n -x 9; exec node --input-type=module -e "$TEST_CODE"'], {
     encoding: 'utf8', env: { PATH: process.env.PATH, TEST_DIRECTORY: directory, TEST_CODE: `
       import fs from 'node:fs';
+      import {fixtureFailure} from ${JSON.stringify(new URL('./release-test-diagnostics.mjs', import.meta.url).href)};
       import {prepareBackup} from ${JSON.stringify(coordinatorUrl)};
       import {FakeCoordinator} from ${JSON.stringify(fakeUrl)};
       const directory=process.env.TEST_DIRECTORY;
@@ -43,7 +44,7 @@ function execute(directory, code = '') {
       const driver=new FakeCoordinator(directory+'/fixture.json');
       ${code}
       try { prepareBackup(directory,manifest,'unused-bundle','unused-runtime',directory+'/backup',driver) }
-      catch { process.stderr.write('Preparation failed safely.'); process.exitCode=1 }
+      catch(error) {process.stderr.write(fixtureFailure(error, 'prepareBackup'));process.exitCode=1}
     ` },
   })
 }
