@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import { join } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { create } from './manifest.mjs'
 import { buildBundle, bundleFiles, deployAllowed, hash, parseBundle, serverRoot, verifyPublication } from './deploy-bundle.mjs'
@@ -212,8 +212,32 @@ test('adapter calls existing coordinator under its lock, resumes migrations, and
   api.assertOperationLock = () => { throw new Error('busy') };calls.length = 0
   assert.throws(() => runCoordinator(api, ...args), /busy/);assert.deepEqual(calls, [])
 })
-test('SSH adapter uses the same nonblocking directory lock as release.sh', () => fixture(path => {
+test('SSH adapter uses the same nonblocking directory lock as release.sh', async () => asyncFixture(async path => {
   const wrapper = join(root, 'docker/release/deploy-server.sh')
-  const result = spawnSync('sh', ['-ec', 'exec 9<"$1/shared/state"; flock -n -x 9; sh "$2" "$1" v1.2.3 sha pipeline registry checksum', 'sh', path, wrapper], { encoding: 'utf8', timeout: 5000 })
-  assert.notEqual(result.status, 0);assert.match(result.stderr, /lock is busy/)
+  const directory = join(path, 'shared/state'), state = join(directory, 'state.json')
+  fs.writeFileSync(state, 'PRIVATE_CANARY=unchanged', { mode: 0o600 })
+  // Keep the holder independent: a shell may exec its last command, whose
+  // reopening of FD 9 would otherwise release the fixture's only lock.
+  const holder = spawn('sh', ['-ec', 'exec 9<"$1"; flock -n -x 9; echo ready; read done', 'sh', directory], { stdio: ['pipe', 'pipe', 'pipe'] })
+  try {
+    await new Promise((resolve, reject) => {
+      holder.stdout.once('data', resolve)
+      holder.once('error', reject)
+      holder.once('exit', code => reject(new Error(`Lock holder exited: ${code}`)))
+    })
+    const result = spawnSync('sh', [wrapper, path, 'v1.2.3', 'sha', 'pipeline', 'registry', 'checksum'], { encoding: 'utf8', timeout: 5000 })
+    assert.equal(result.error, undefined);assert.equal(result.status, 1)
+    assert.match(result.stderr, /lock is busy/)
+    assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE_CANARY/)
+    const blocked = spawnSync('sh', [join(root, 'docker/release/release.sh'), 'status', directory], { encoding: 'utf8', timeout: 5000 })
+    assert.equal(blocked.error, undefined);assert.equal(blocked.status, 1)
+    assert.equal(fs.readFileSync(state, 'utf8'), 'PRIVATE_CANARY=unchanged')
+    assert.deepEqual(fs.readdirSync(join(path, 'releases')), [])
+  } finally {
+    if (holder.exitCode === null) {
+      const exited = new Promise(resolve => holder.once('exit', resolve))
+      holder.stdin.end('done\n')
+      await exited
+    }
+  }
 }))
