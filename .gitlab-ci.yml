@@ -181,7 +181,7 @@ release-checks:
     - 'printf "Release checks SHA=%s pipeline=%s job=%s\n" "$CI_COMMIT_SHA" "$CI_PIPELINE_ID" "$CI_JOB_ID"'
     - node -p 'JSON.stringify({node:process.version,platform:process.platform,arch:process.arch})'
     - cat /etc/alpine-release
-    - busybox | head -n 1
+    - busybox
     - df -Pk /tmp "$CI_PROJECT_DIR"
     - flock --version
     - docker compose version
