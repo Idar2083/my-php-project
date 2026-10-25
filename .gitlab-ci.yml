@@ -194,6 +194,7 @@ release-checks:
       done
     - |
       node --test --test-concurrency=1 \
+        docker/release/runtime.test.mjs \
         docker/release/release.test.mjs \
         docker/release/release-test-diagnostics.test.mjs \
         docker/release/release-tags.test.mjs \

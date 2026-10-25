@@ -211,6 +211,15 @@ test('release Compose removes builds/frontend and preserves production runtime c
   assert.equal(compose(true, { NGINX_IMAGE: '' }).status, 1)
   assert.equal(compose(true, { PHP_IMAGE: undefined }).status, 1)
   assert.equal(compose(true, { NGINX_IMAGE: undefined }).status, 1)
+  for (const key of ['APP_KEY', 'JWT_SECRET', 'APP_URL', 'NGINX_PORT', 'POSTGRES_DB', 'POSTGRES_USER',
+    'POSTGRES_PASSWORD', 'DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD',
+    'REDIS_PASSWORD', 'RABBITMQ_USER', 'RABBITMQ_PASSWORD', 'MINIO_ROOT_USER', 'MINIO_ROOT_PASSWORD', 'MINIO_BUCKET', 'PRODUCTS_CACHE_TTL']) {
+    for (const value of ['', undefined]) assert.equal(compose(true, { [key]: value }).status, 1, key)
+  }
+  const privateAccess = compose(true, { NGINX_PORT: '127.0.0.1:8080', APP_URL: 'http://127.0.0.1:8080' })
+  assert.equal(privateAccess.status, 0)
+  assert.equal(JSON.parse(privateAccess.stdout).services.nginx.ports.length, 1)
+  assert.equal(JSON.parse(privateAccess.stdout).services.nginx.ports[0].host_ip, '127.0.0.1')
   assert.equal(compose(true, { APP_URL: '' }).status, 1)
   assert.equal(compose(true, { APP_URL: undefined }).status, 1)
   for (const name of ['php', 'report-worker', 'outbox-worker', 'report-scheduler']) {

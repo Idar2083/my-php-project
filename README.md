@@ -497,9 +497,10 @@ sh docker/release/release.sh check /path/to/state-directory \
 завершается ненулевым кодом без ожидания и без записи файлов. `status` выводит
 только project, revision, идентификаторы current/previous и текущую фазу.
 `check` проверяет manifest и совместимость с состоянием, затем выполняет только
-`docker compose config --format json`, удерживая вывод в памяти. Bundle содержит
-корневой публичный `.env` и три Compose-файла из коммита manifest; runtime.env
-передаётся отдельно и содержит закрытые настройки. Compose project берётся
+`docker compose config --format json`, удерживая вывод в памяти. Доставляемый
+bundle содержит три Compose-файла из коммита manifest; серверный адаптер создаёт
+в нём пустой `.env`. Runtime.env передаётся отдельно и содержит полные закрытые
+настройки приложения и сервисов. Compose project берётся
 из состояния через явный `--project-name`, а ссылки на образы — из manifest,
 с приоритетом над shell/env-файлами. Проверяются отсутствие build, frontend
 и bind mounts, точные прикладные образы и production environment PHP.
@@ -513,8 +514,8 @@ sh docker/release/release.sh check /path/to/state-directory \
 `SSL_CERT_DIR` для proxy/CA. Значения не печатаются. Другие shell-переменные,
 включая `DB_*`, `APP_*`, переменные портов и произвольные `COMPOSE_*`, не наследуются.
 `COMPOSE_PROFILES` принудительно пуст, `PHP_IMAGE`/`NGINX_IMAGE` берутся из manifest.
-Приоритет runtime.env над публичным bundle/.env сохраняется. Настройки приложения
-нужно задавать в этих файлах; ссылки на посторонние shell-переменные внутри них
+Runtime.env загружается после пустого bundle/.env. Настройки приложения
+нужно задавать в runtime.env; ссылки на посторонние shell-переменные внутри них
 не поддерживаются. Окружение самого Node/shell и доверенный PATH эта фильтрация
 не изолирует; она относится только к дочернему процессу Compose.
 

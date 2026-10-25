@@ -82,12 +82,128 @@ DEPLOY_ROOT/
 обновления адаптера до следующего тега. Скрипты запускаются через sh/node,
 executable bit не требуется. Не разрешать посторонним изменять tools и каталоги.
 
-В `shared/runtime.env` (0600) вручную задать **полную** конфигурацию Compose:
-обычные параметры из корневого шаблона, NGINX_PORT, APP_URL, постоянные APP_KEY и
+До первого bootstrap подготовить `shared/runtime.env` (0600) с **полной** конфигурацией Compose:
+параметры из существующего корневого `.env`, NGINX_PORT, APP_URL, постоянные APP_KEY и
 JWT_SECRET, DB_*/POSTGRES_*, Redis/RabbitMQ/MinIO credentials. Это не копия `.env`
 из CI: корневой `.env`, app/.env, .env.testing и локальные overrides не доставляются.
 Не хранить runtime-секреты в CI, bundle или manifest. Подготовить ingress/TLS,
 DNS, firewall, обновление сертификата и отдельную безопасную копию backup.
+
+### Первый VPS без домена: закрытая проверка
+
+До DNS/TLS используется только SSH-туннель. Минимальная настройка совместима
+с существующими тремя Compose-файлами и `checkCompose`:
+`NGINX_PORT=127.0.0.1:8080`, `APP_URL=http://127.0.0.1:8080`.
+NGINX_PORT здесь — существующая Compose port specification: результатом является
+один порт `127.0.0.1:8080:80`, а не публикация на всех интерфейсах. Не заменять
+его просто на `8080`. Внутренние health checks продолжают обращаться к порту 80
+в контейнере. Same-origin frontend использует `/api`, CORS для туннеля не нужен.
+Release health checks проверяют приложение из контейнера, поэтому доступность
+туннеля и фактический host bind оператор проверяет отдельно.
+
+Дополнительный корневой `.env.example` не нужен: существующий корневой `.env`
+документирует публичные Compose-параметры, `.env.local` содержит локальные
+секреты и загружается после него через `--env-file`. `app/.env.example` остаётся
+шаблоном Laravel для локального `app/.env`.
+
+Для release deployment единственный источник production-настроек —
+`/srv/pizza/shared/runtime.env` (0600, владелец deploy). Это уже предусмотренный
+серверным адаптером механизм, а не дополнительная копия локального окружения.
+Адаптер не доставляет локальные `.env`/`.env.local`/`app/.env`, создаёт пустой
+bundle/.env и загружает runtime.env через `--env-file`; переменные приложения
+из shell исключены. Production Compose передаёт настройки Laravel через
+container environment, поэтому отдельный `app/.env` в production не нужен.
+Не хранить production-секреты в отслеживаемом корневом `.env`.
+
+Для первого закрытого запуска установить отдельно просмотренный
+`docker/release/create-runtime.mjs` в `/srv/pizza/deploy-tools/` и выполнить
+от deploy-пользователя после подготовки каталога shared (0700):
+
+```sh
+node /srv/pizza/deploy-tools/create-runtime.mjs /srv/pizza/shared 8080
+stat -c '%a %U:%G %n' /srv/pizza/shared/runtime.env
+```
+
+Это отдельный операторский инструмент, не часть delivery bundle. CI запускает
+только его тесты; deploy/coordinator/bootstrap генератор не вызывают. Он не
+запускает Docker и не читает локальные env-файлы. Создаёт один runtime.env:
+независимые случайные APP_KEY/JWT_SECRET/пароли, согласованные DB_*/POSTGRES_*
+и loopback-доступ. APP_KEY — `base64:` + base64 от 32 случайных bytes.
+
+Генератор требует принадлежащий текущему пользователю приватный каталог без
+symlinks, записывает полный файл 0600 во временный каталог 0700 и публикует
+через exclusive hard link с fsync. Существующий файл никогда не заменяет;
+symlink или небезопасные права отклоняет. Существующий обычный файл 0600
+текущего пользователя сохраняет без проверки правильности его содержимого.
+Секреты не передаются через argv и не выводятся. При ошибке после публикации
+файл уже может существовать: сначала проверить его наличие и права, не удалять
+и не генерировать новые ключи вслепую.
+
+До первого bootstrap проверить конфигурацию по таблице ниже через
+`docker compose ... config --quiet` с runtime.env и manifest image references.
+Сам bootstrap не создаёт runtime.env; без него первый запуск невозможен.
+При повторном deploy используется тот же файл, генератор повторно не нужен.
+Его повторный ручной запуск сохраняет существующий файл даже при другом порте;
+это не инструмент изменения порта или ротации credentials. Не запускать
+`key:generate`/`jwt:secret` для уже развёрнутого приложения.
+Не выводить секреты в терминал, логи или аргументы команд.
+
+Полный набор входных переменных runtime.env:
+
+| Переменные | Согласование / назначение |
+| --- | --- |
+| `NGINX_PORT`, `APP_URL` | `127.0.0.1:8080` и `http://127.0.0.1:8080`; при другом порте изменить оба и локальный порт туннеля |
+| `APP_KEY`, `JWT_SECRET` | Постоянный Laravel AES-256 key (`base64:` + 32 bytes) и независимый случайный JWT secret |
+| `DB_CONNECTION`, `DB_HOST`, `DB_PORT` | `pgsql`, `postgres`, `5432` — внутренний адрес, не VPS IP |
+| `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` | В точности равны `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Инициализация нового PostgreSQL volume; смена env не меняет уже существующие роли/пароли |
+| `REDIS_PASSWORD` | Один пароль для Redis, Laravel и migration isolation lock; host/port фиксированы Compose как `redis:6379` |
+| `PRODUCTS_CACHE_TTL` | `3600`; основной cache остаётся database, только migration использует Redis |
+| `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | Compose передаёт те же credentials RabbitMQ и Laravel; host `rabbitmq`, port `5672`, vhost `/`, topology использует application defaults |
+| `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_BUCKET` | Compose автоматически задаёт Laravel `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_BUCKET` из этих значений; отдельно AWS credentials не задавать |
+| `POSTGRES_PORT`, `REDIS_PORT`, `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`, `MINIO_PORT`, `MINIO_CONSOLE_PORT` | Только interpolation базового dev Compose; production удаляет все эти port mappings |
+
+Compose фиксирует `APP_ENV=production`, `APP_DEBUG=false`, `LOG_CHANNEL=stderr`,
+`AWS_DEFAULT_REGION=us-east-1`, `AWS_ENDPOINT=http://minio:9000`,
+`AWS_USE_PATH_STYLE_ENDPOINT=true`. MAIL_* не передаются production Compose;
+внешняя почта сейчас не настроена. PHP/nginx images приходят исключительно из
+manifest. Production override отклоняет пустые обязательные параметры.
+Bootstrap дополнительно сверяет DB_* с POSTGRES_* до создания ресурсов.
+
+Для проверки реального runtime использовать coordinator check (после появления
+state) либо `docker compose ... config --quiet`; никогда не печатать `config`,
+`config --environment`, `docker inspect` или env целиком. Coordinator разбирает
+Compose JSON внутри процесса, без вывода; launch/bootstrap `compose.json`
+**содержит секреты** и хранится только в приватном state (0600/0700). Его нельзя
+копировать в bundle, CI artifacts или диагностические вложения. Docker-admin
+по своей природе может читать container environment; права deploy ограничивают
+доступ к этому механизму, но не скрывают секреты от администратора Docker.
+
+На пустом VPS bootstrap требует заранее доступных локально инфраструктурных
+images: `postgres:15-alpine`, `redis:7-alpine`,
+`rabbitmq:3.13-management-alpine`, `minio/minio:latest`, `minio/mc:latest`.
+Bootstrap использует `--pull never` для них; автоматически получает только
+application digest images из manifest. Сначала отдельно согласовать pull этих
+пяти images, проверить архитектуру и доступность. Теги инфраструктуры сейчас
+изменяемые: зафиксировать использованные image IDs/RepoDigests в операторской
+записи; это ограничение воспроизводимости, не повод обходить coordinator.
+
+После согласованного bootstrap открыть туннель с рабочей станции отдельным
+операторским SSH-ключом с разрешённым forwarding:
+
+```sh
+ssh -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -N \
+  -L 127.0.0.1:8080:127.0.0.1:8080 deploy@149.154.64.169
+```
+
+Открывать `http://127.0.0.1:8080`, проверять `/up` и `/api/products`. CI deploy
+key с `restrict` не подходит для туннеля; не снимать его ограничения ради
+проверки. Не настраивать forwarding/SSH/firewall автоматически. До первого
+запуска проверить версию Docker Engine (для loopback publishing нужна 28+;
+старые версии имели ограничение изоляции localhost в общей L2-сети;
+[документация Docker](https://docs.docker.com/engine/network/port-publishing/)).
+HTTP внутри SSH-туннеля не означает настроенный публичный HTTPS. Публичный
+запуск требует отдельной проверки домена, DNS, TLS/renewal и ingress.
 
 ### Доставка, первый bootstrap и повтор
 
@@ -197,7 +313,8 @@ flock на всю команду. Это изменяющая операция, 
 Не использовать её для регистрации существующих данных или контейнеров.
 
 Оператор заранее готовит проверенный manifest, Compose bundle того же коммита
-(три Compose-файла и публичный `.env`) и runtime.env **вне bundle/Git**, mode 0600.
+(три Compose-файла и пустой `.env`, как при SSH-доставке) и заранее подготовленный
+runtime.env **вне bundle/Git**, mode 0600.
 Нужны все DB_*/POSTGRES_* параметры с одинаковыми database/user/password,
 APP_KEY, JWT_SECRET, APP_URL, Redis/RabbitMQ/MinIO credentials и MINIO_BUCKET.
 APP_URL — внешний URL со схемой; для HTTPS дополнительно требуется настроить

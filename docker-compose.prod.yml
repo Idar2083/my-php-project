@@ -5,27 +5,27 @@ x-app-production-environment: &app-production-environment
   APP_URL: ${APP_URL:?Set APP_URL for production}
   LOG_CHANNEL: stderr
   JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET for production}
-  PRODUCTS_CACHE_TTL: ${PRODUCTS_CACHE_TTL}
+  PRODUCTS_CACHE_TTL: ${PRODUCTS_CACHE_TTL:?Set PRODUCTS_CACHE_TTL for production}
   REDIS_HOST: redis
   REDIS_PORT: 6379
-  REDIS_PASSWORD: ${REDIS_PASSWORD}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD for production}
   RABBITMQ_HOST: rabbitmq
   RABBITMQ_PORT: 5672
-  RABBITMQ_USER: ${RABBITMQ_USER}
-  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD}
+  RABBITMQ_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER for production}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD for production}
   RABBITMQ_VHOST: /
 
-  DB_CONNECTION: ${DB_CONNECTION}
-  DB_HOST: ${DB_HOST}
-  DB_PORT: ${DB_PORT}
-  DB_DATABASE: ${DB_DATABASE}
-  DB_USERNAME: ${DB_USERNAME}
-  DB_PASSWORD: ${DB_PASSWORD}
+  DB_CONNECTION: ${DB_CONNECTION:?Set DB_CONNECTION for production}
+  DB_HOST: ${DB_HOST:?Set DB_HOST for production}
+  DB_PORT: ${DB_PORT:?Set DB_PORT for production}
+  DB_DATABASE: ${DB_DATABASE:?Set DB_DATABASE for production}
+  DB_USERNAME: ${DB_USERNAME:?Set DB_USERNAME for production}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD for production}
 
-  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
-  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER for production}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD for production}
   AWS_DEFAULT_REGION: us-east-1
-  AWS_BUCKET: ${MINIO_BUCKET}
+  AWS_BUCKET: ${MINIO_BUCKET:?Set MINIO_BUCKET for production}
   AWS_ENDPOINT: http://minio:9000
   AWS_USE_PATH_STYLE_ENDPOINT: "true"
 
@@ -168,7 +168,7 @@ services:
       target: prod
     restart: unless-stopped
     ports:
-      - "${NGINX_PORT}:80"
+      - "${NGINX_PORT:?Set NGINX_PORT for production}:80"
     volumes: !reset []
     depends_on:
       php:
@@ -186,12 +186,15 @@ services:
 
   postgres:
     environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB for production}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER for production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD for production}
       APP_ENV: production
       APP_DEBUG: "false"
 
-      DB_CONNECTION: ${DB_CONNECTION}
-      DB_HOST: ${DB_HOST}
-      DB_PORT: ${DB_PORT}
+      DB_CONNECTION: ${DB_CONNECTION:?Set DB_CONNECTION for production}
+      DB_HOST: ${DB_HOST:?Set DB_HOST for production}
+      DB_PORT: ${DB_PORT:?Set DB_PORT for production}
     volumes:
       - pg_data_prod:/var/lib/postgresql/data
     ports: !reset []
@@ -199,13 +202,13 @@ services:
   redis:
     restart: unless-stopped
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD for production}
     command:
       - redis-server
       - --appendonly
       - "yes"
       - --requirepass
-      - "${REDIS_PASSWORD}"
+      - "${REDIS_PASSWORD:?Set REDIS_PASSWORD for production}"
     ports: !reset []
     healthcheck:
       test:
@@ -218,11 +221,17 @@ services:
       retries: 5
 
   rabbitmq:
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER for production}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD for production}
     volumes:
       - rabbitmq_data_prod:/var/lib/rabbitmq
     ports: !reset []
 
   minio:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER for production}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD for production}
     command:
       - server
       - /data
@@ -231,6 +240,12 @@ services:
     volumes:
       - minio_data_prod:/data
     ports: !reset []
+
+  minio-init:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER for production}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD for production}
+      MINIO_BUCKET: ${MINIO_BUCKET:?Set MINIO_BUCKET for production}
 
 volumes:
   pg_data_prod:
