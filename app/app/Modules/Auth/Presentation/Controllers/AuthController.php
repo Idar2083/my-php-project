@@ -6,8 +6,8 @@ namespace App\Modules\Auth\Presentation\Controllers;
 
 use App\Http\Controllers\Controller;
 use App\Modules\Auth\Application\Handlers\RegisterUserHandler;
-use App\Modules\Auth\Presentation\Requests\LoginRequest;
-use App\Modules\Auth\Presentation\Requests\RegisterRequest;
+use App\Modules\Auth\Presentation\Resources\Requests\LoginRequest;
+use App\Modules\Auth\Presentation\Resources\Requests\RegisterRequest;
 use Symfony\Component\HttpFoundation\Response;
 
 final class AuthController extends Controller

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Modules\Auth\Presentation\Requests;
+namespace App\Modules\Auth\Presentation\Resources\Requests;
 
 use App\Http\Requests\ApiRequest;
 use Illuminate\Validation\Rules\Password;
