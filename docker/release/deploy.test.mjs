@@ -283,6 +283,8 @@ test('check validates the real three-file Compose bundle without a daemon or loc
       MINIO_ROOT_PASSWORD: 'public-test', MINIO_BUCKET: 'reports', NGINX_PORT: '8080', PRODUCTS_CACHE_TTL: '3600',
       POSTGRES_PORT: '5432', REDIS_PORT: '6379', RABBITMQ_PORT: '5672', RABBITMQ_MANAGEMENT_PORT: '15672',
       MINIO_PORT: '9000', MINIO_CONSOLE_PORT: '9001',
+      MINIO_IMAGE: 'registry.example.test/project/minio-community@sha256:' + 'e'.repeat(64),
+      MINIO_MC_IMAGE: 'registry.example.test/project/mc-community@sha256:' + 'f'.repeat(64),
     }
     const runtime = join(directory, 'runtime.env')
     fs.writeFileSync(runtime, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(''))
@@ -300,7 +302,7 @@ test('check validates the real three-file Compose bundle without a daemon or loc
     const result = spawnSync('sh', [join(root, 'docker/release/release.sh'), 'check', directory, manifest, directory, runtime], {
       encoding: 'utf8', env: { PATH: `${directory}:${process.env.PATH}`, COMPOSE_PROJECT_NAME: 'wrong', PHP_IMAGE: 'wrong',
         DB_HOST: 'wrong-host', DB_PORT: '6543', NGINX_PORT: '9999', POSTGRES_PORT: '9998', REDIS_PORT: '9997',
-        RABBITMQ_PORT: '9996', MINIO_PORT: '9995', COMPOSE_FILE: '/absent/override.yml' },
+        RABBITMQ_PORT: '9996', MINIO_PORT: '9995', MINIO_IMAGE: 'wrong-server', MINIO_MC_IMAGE: 'wrong-client', COMPOSE_FILE: '/absent/override.yml' },
     })
     assert.equal(result.status, 0, result.stderr)
     const config = JSON.parse(fs.readFileSync(join(directory, 'captured.json'), 'utf8'))
@@ -308,6 +310,8 @@ test('check validates the real three-file Compose bundle without a daemon or loc
       assert.equal(config.services[name].environment.DB_HOST, values.DB_HOST)
       assert.equal(config.services[name].environment.DB_PORT, values.DB_PORT)
     }
+    assert.equal(config.services.minio.image, values.MINIO_IMAGE)
+    assert.equal(config.services['minio-init'].image, values.MINIO_MC_IMAGE)
     assert.equal(config.services.nginx.ports[0].published, values.NGINX_PORT)
     for (const name of ['postgres', 'redis', 'rabbitmq', 'minio']) assert.equal(config.services[name].ports?.length || 0, 0)
     assert.deepEqual(snapshot(), before)
@@ -328,7 +332,7 @@ test('Compose environment preserves CLI requirements and excludes application/sh
   ].map(name => [name, `public-fixture-${name}`]))
   const input = { ...cli, DB_HOST: 'wrong', DB_PORT: '9999', NGINX_PORT: '9998', APP_KEY: 'public-canary',
     COMPOSE_FILE: 'wrong.yml', COMPOSE_PROJECT_NAME: 'wrong', COMPOSE_PROFILES: '*',
-    PHP_IMAGE: 'wrong', NGINX_IMAGE: 'wrong', NODE_OPTIONS: 'wrong' }
+    PHP_IMAGE: 'wrong', NGINX_IMAGE: 'wrong', MINIO_IMAGE: 'wrong', MINIO_MC_IMAGE: 'wrong', NODE_OPTIONS: 'wrong' }
   assert.deepEqual(composeProcessEnvironment(input, first), {
     ...cli, COMPOSE_PROFILES: '', PHP_IMAGE: first.images.php, NGINX_IMAGE: first.images.nginx,
   })
@@ -352,6 +356,8 @@ test('status/check are read-only, bind images/project, sanitize errors and only 
         image: name === 'nginx' ? first.images.nginx : first.images.php,
         environment: { APP_ENV: 'production', APP_DEBUG: 'false' },
       }])) }
+    config.services.minio = { image: 'registry.example.test/pizza/minio-community@sha256:' + 'e'.repeat(64) }
+    config.services['minio-init'] = { image: 'registry.example.test/pizza/mc-community@sha256:' + 'f'.repeat(64) }
     fs.writeFileSync(join(directory, 'docker.config'), JSON.stringify(config))
     const environment = { PATH: `${directory}:${process.env.PATH}`,
       COMPOSE_PROJECT_NAME: 'wrong', PHP_IMAGE: 'wrong', NGINX_IMAGE: 'wrong' }
@@ -365,6 +371,13 @@ test('status/check are read-only, bind images/project, sanitize errors and only 
     const args = fs.readFileSync(calls, 'utf8').trim().split('\n')
     assert.deepEqual(args.slice(0, 3), ['compose', '--project-name', 'existing-production-project'])
     assert.deepEqual(args.slice(-3), ['config', '--format', 'json'])
+    // Custom infrastructure names do not require expanding the PHP/Nginx manifest
+    // or relaxing the ban on bind mounts, including mounts on infrastructure.
+    config.services.minio.volumes = [{ type: 'bind', source: '/private', target: '/data' }]
+    fs.writeFileSync(join(directory, 'docker.config'), JSON.stringify(config))
+    assert.equal(run('check').status, 1)
+    delete config.services.minio.volumes
+    fs.writeFileSync(join(directory, 'docker.config'), JSON.stringify(config))
     fs.writeFileSync(join(directory, 'docker.fail'), '')
     const failure = run('check')
     assert.equal(failure.status, 1)

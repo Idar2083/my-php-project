@@ -40,7 +40,7 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
   }
   try {
     const pgImage=docker('image','inspect','postgres:15-alpine','--format','{{.Id}}')
-    const minioImage=docker('image','inspect','minio/minio:latest','--format','{{.Id}}')
+    const minioImage=docker('image','inspect',process.env.BACKUP_TEST_MINIO_IMAGE || 'pizza-infra/minio-community:RELEASE.2025-10-15T17-29-55Z','--format','{{.Id}}')
     const phpImage=docker('image','inspect',process.env.BACKUP_TEST_PHP_IMAGE || 'pizza-background-check:audit-eb7383641a1a-9e67bdf247c5','--format','{{.Id}}')
     const pg=createContainer('postgres',pgImage,['--read-only','--tmpfs','/var/lib/postgresql/data:rw','--tmpfs','/var/run/postgresql:rw','--tmpfs','/tmp:rw','--env','POSTGRES_HOST_AUTH_METHOD=trust','--env','POSTGRES_USER=postgres','--env','POSTGRES_DB=postgres'])
     docker('start',pg); await ready(['exec',pg,'sh','-ec','test "$(cat /proc/1/comm)" = postgres && pg_isready -U postgres'])
@@ -138,7 +138,7 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
       const ids=docker('ps','-aq','--filter','label=pizza.data-recovery='+recoveryId).split(/\s+/).filter(Boolean)
       for(const id of ids) {
         assert.equal(JSON.parse(docker('inspect',id))[0].Config.Labels['pizza.data-recovery'],recoveryId)
-        docker('rm','-f',id)
+        docker('rm','-f','-v',id)
       }
       const restoredVolumes=docker('volume','ls','-q','--filter','label=pizza.data-recovery='+recoveryId).split(/\s+/).filter(Boolean)
       for(const name of restoredVolumes) {

@@ -48,8 +48,18 @@ build:
     - docker build --target prod -f docker/php/Dockerfile -t "$CI_REGISTRY_IMAGE/php-build-check:$CI_PIPELINE_ID" .
     - docker push "$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID"
 
+# Independent of PHP tooling; failure still blocks production integration/publish.
+minio-images:
+  extends: .pipeline-job
+  stage: build
+  image: docker:latest
+  before_script: *registry-login
+  script:
+    - sh docker/ci/check-minio-images.sh
+
 phpstan:
   extends: .pipeline-job
+  needs: [build]
   stage: code-quality
   script:
     - cd /var/www/app
@@ -63,6 +73,7 @@ phpstan:
 
 php-cs-fixer:
   extends: .pipeline-job
+  needs: [build]
   stage: code-quality
   script:
     - cd /var/www/app
@@ -70,6 +81,7 @@ php-cs-fixer:
 
 rector:
   extends: .pipeline-job
+  needs: [build]
   stage: code-quality
   script:
     - cd /var/www/app
@@ -77,6 +89,7 @@ rector:
 
 tests:
   extends: .pipeline-job
+  needs: [build, minio-images]
   stage: code-quality
   services:
     - name: postgres:15-alpine
@@ -85,7 +98,7 @@ tests:
     - name: rabbitmq:3.13-management-alpine
       alias: rabbitmq
 
-    - name: minio/minio:latest
+    - name: "$MINIO_CI_IMAGE"
       alias: minio
       command:
         - server
@@ -156,13 +169,14 @@ tests:
 
 frontend:
   extends: .pipeline-job
+  needs: []
   stage: code-quality
   image: node:24-alpine
   variables:
     VITE_API_BASE_URL: /api
   script:
     - cd "$CI_PROJECT_DIR"
-    - node --test docker/release/published-manifest.test.mjs
+    - node --test docker/release/published-manifest.test.mjs docker/minio/ci.test.mjs
     - cd frontend
     - npm ci --no-audit --no-fund
     - npm test
@@ -171,9 +185,9 @@ frontend:
 # Daemon-free release gate: fake adapters plus Compose config only.
 release-checks:
   extends: .pipeline-job
+  needs: []
   stage: code-quality
   image: node:24-alpine
-  dependencies: []
   before_script:
     - apk add --no-cache util-linux docker-cli-compose openssh-client
   script:
@@ -211,6 +225,7 @@ release-checks:
 
 production-config:
   extends: .pipeline-job
+  needs: []
   stage: code-quality
   image: docker:latest
   script:
@@ -235,6 +250,7 @@ production-integration:
   stage: production-integration
   image: docker:latest
   dependencies: []
+  before_script: *registry-login
   script:
     - sh "$CI_PROJECT_DIR/docker/ci/production-integration.sh"
   after_script:

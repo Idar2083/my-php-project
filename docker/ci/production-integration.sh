@@ -3,6 +3,11 @@ set -eu
 
 cd "$CI_PROJECT_DIR"
 mkdir -p reports
+# Archive only the clean reviewed commit, before any Docker/network operations.
+sh docker/ci/archive-production-source.sh
+# Pull the already verified private images on this job's daemon. The helper
+# receives only digest references, never Registry credentials.
+sh docker/ci/check-minio-images.sh --pull-only
 trap 'sh "$CI_PROJECT_DIR/docker/ci/cleanup-production-check.sh"' EXIT
 
 tools_image="pizza-ci-production-tools:$CI_JOB_ID"
@@ -16,11 +21,11 @@ container=$(docker create -i --network bridge \
     -e PRODUCTION_CHECK_NETWORK=container \
     -e "PRODUCTION_CHECK_PROJECT=$project" \
     -e PRODUCTION_EXPORT_IMAGES=1 \
+    -e "MINIO_IMAGE=$MINIO_CI_IMAGE" -e "MINIO_MC_IMAGE=$MINIO_MC_CI_IMAGE" \
     -e CI_REGISTRY_IMAGE -e CI_PIPELINE_ID -e CI_JOB_ID -e CI_COMMIT_SHA \
     "$tools_image" sh -ec 'mkdir -p /workspace; tar -xf - -C /workspace; node /workspace/frontend/tests-production/run.js')
 printf '%s\n' "$container" > reports/production-check.container
-# Send the checkout through stdin: no assumption about host paths on the Docker daemon.
-git archive --format=tar --output=reports/production-check.source.tar HEAD
+# Send the verified commit through stdin: no assumption about host paths on the daemon.
 docker start -ai "$container" < reports/production-check.source.tar
 docker cp "$container:/workspace/reports/production-images.tar.gz" reports/production-images.tar.gz
 docker cp "$container:/workspace/reports/production-images.ids" reports/production-images.ids

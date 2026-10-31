@@ -181,12 +181,252 @@ Compose JSON внутри процесса, без вывода; launch/bootstra
 
 На пустом VPS bootstrap требует заранее доступных локально инфраструктурных
 images: `postgres:15-alpine`, `redis:7-alpine`,
-`rabbitmq:3.13-management-alpine`, `minio/minio:latest`, `minio/mc:latest`.
+`rabbitmq:3.13-management-alpine` и собственные community MinIO/mc ниже.
 Bootstrap использует `--pull never` для них; автоматически получает только
-application digest images из manifest. Сначала отдельно согласовать pull этих
-пяти images, проверить архитектуру и доступность. Теги инфраструктуры сейчас
-изменяемые: зафиксировать использованные image IDs/RepoDigests в операторской
-записи; это ограничение воспроизводимости, не повод обходить coordinator.
+application digest images из manifest. Загрузку инфраструктуры согласовать отдельно,
+проверить архитектуру и доступность; image IDs/RepoDigests сохранить в операторской
+записи. Теги PostgreSQL/Redis/RabbitMQ остаются изменяемыми.
+
+### Собственные community MinIO и mc (подготовка, не deploy)
+
+Официальные community repositories недоступны по проверенным Docker Hub/Quay
+адресам. Рецепты `docker/minio/Dockerfile.server` и `Dockerfile.mc` собирают
+исходники непосредственно из официальных Git repositories с проверкой commit SHA:
+
+| Компонент | Официальный тег | Commit SHA |
+| --- | --- | --- |
+| [MinIO](https://github.com/minio/minio) | `RELEASE.2025-10-15T17-29-55Z` | `9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a` |
+| [mc](https://github.com/minio/mc) | `RELEASE.2025-08-13T08-35-41Z` | `7394ce0dd2a80935aded936b09fa12cbb3cb8096` |
+
+Перед разрешением сборки отдельно подтвердить tag→SHA через GitHub API и
+manifest/config баз через Docker Registry API, без загрузки слоёв. Исходники
+upstream и первичные ответы registry в репозитории не сохранены, поэтому локальное
+ревью не подтверждает соответствие приведённых значений официальным источникам.
+Оба FROM предполагают **linux/amd64 manifest**, не index:
+
+| База | Manifest digest |
+| --- | --- |
+| Docker Official Image `golang:alpine`, Go `1.27.3` | `sha256:bff16a94c0b4b6d9642581e2a3aa81beb3edb940b2f5a3aac1d22c6a68cb7747` |
+| Docker Official Image `alpine:3.22` | `sha256:dc92f017beea8e7f43263073d717f7bc011228c95d5312e440deb4d035bb4eec` |
+
+Go выбран новее указанных upstream toolchain 1.24.8/1.23.10. У сохранившихся
+trial-образов проверены `--version`, release/commit labels и runtime Go 1.27.3
+linux/amd64; MinIO/mc contract и изолированный backup/restore прошли 2026-10-31.
+Это подтверждает проверенное поведение этих image IDs. В сохранённом OCI archive
+обнаружены BuildKit SLSA v1 attestations: subject соответствует amd64 manifest,
+dependency digests совпадают с обеими базами выше, сохранены timestamps сборок.
+Attestations не проверены независимой подписью; они не заменяют исходные build logs
+и доказанную связь с текущими Dockerfile. Подробная операторская
+запись и сценарий публикации хранятся приватно вне Git и `/tmp`.
+`GOTOOLCHAIN=local` исключает автоматическую подмену компилятора,
+`GOAMD64=v1` не требует расширенного CPU ISA, `CGO_ENABLED=0` исключает C toolchain.
+Модули проверяются через `go mod verify`; изменение go.mod/go.sum отклоняется.
+Сборки НЕ объявляются воспроизводимыми: APK indexes и версии прямых/транзитивных
+пакетов ОС не зафиксированы. Go dependency graph берётся из go.mod/go.sum указанного
+commit, но полнота фиксации транзитивных модулей ещё требует проверки исходников;
+go mod verify не является проверкой уязвимостей. Доступность Git/Go modules,
+настройки proxy/checksum service, версия BuildKit и timestamps OCI не зафиксированы.
+Две независимые сборки бинарников и OCI images не сравнивались. Community upstream
+архивирован; своя сборка не обеспечивает будущие security fixes. Сохранить LICENSE,
+CREDITS и соответствующий исходный код для соблюдения условий upstream лицензии.
+
+Только после отдельного разрешения, локально из корня репозитория:
+
+```sh
+docker buildx build --platform linux/amd64 --load \
+  -f docker/minio/Dockerfile.server \
+  -t pizza-infra/minio-community:RELEASE.2025-10-15T17-29-55Z docker/minio
+docker buildx build --platform linux/amd64 --load \
+  -f docker/minio/Dockerfile.mc \
+  -t pizza-infra/mc-community:RELEASE.2025-08-13T08-35-41Z docker/minio
+MINIO_IMAGE_DOCKER_TEST=1 node --test docker/minio/images.test.mjs
+BACKUP_DOCKER_TEST=1 \
+  BACKUP_TEST_MINIO_IMAGE=pizza-infra/minio-community:RELEASE.2025-10-15T17-29-55Z \
+  BACKUP_TEST_PHP_IMAGE="${LOCAL_PHP_IMAGE_ID:?Set the local PHP utility image ID}" \
+  node --test docker/release/backup-docker.test.mjs
+```
+
+Первый тест проверяет оба health endpoints, server `/data` с read-only root,
+запись в `/data` и `/tmp`, CA bundle, shell, штатный HOME без MC_CONFIG_DIR override,
+повторное создание bucket и S3 запись/чтение. `/tmp` имеет nosuid,nodev, как в restore-test.
+Второй проверяет настоящий offline backup/restore, включая версии объектов.
+PHP utility image с ZipArchive/AWS SDK должен быть подготовлен отдельно.
+Затем выполнить существующую изолированную bootstrap/recovery репетицию ниже
+с локальными production PHP/Nginx digest images. Эти проверки не обращаются к VPS.
+До их успеха совместимость новых образов с production не подтверждена.
+
+Доставка — отдельная согласуемая операция. После проверок опубликовать образы
+в собственный доверенный registry (например, project GitLab Registry), используя
+новые непереиспользуемые tags. Получить RepoDigests **после публикации**, сохранить
+их вместе с локальными image IDs, recipe revision, исходными SHA и build logs.
+Финальные digests до сборки/публикации неизвестны; не подставлять вымышленные значения.
+На VPS заранее получить обе точные digest references через read_registry access.
+Не присваивать своим сборкам имена `minio/minio` или `minio/mc`.
+
+Compose defaults — локальные имена сборок выше. Для production перед bootstrap
+оператор отдельно добавляет две несекретные ссылки в уже существующий runtime.env:
+`MINIO_IMAGE=<own-registry>/minio-community@sha256:<published-digest>` и
+`MINIO_MC_IMAGE=<own-registry>/mc-community@sha256:<published-digest>`.
+Существующие ключи/пароли не менять; генератор runtime повторно не вызывать.
+Значения только из shell не дойдут до release Compose: `state.mjs` намеренно
+отбрасывает такие overrides. Проверить `config --quiet` с реальным runtime и
+image refs из application manifest; содержимое runtime не печатать.
+
+Manifest по-прежнему содержит только PHP/Nginx. Новые имена инфраструктуры
+проходят неизменённый checkCompose; build/bind mounts по-прежнему запрещены.
+Bootstrap фиксирует локальные image IDs всех сервисов в приватном compose.json.
+Backup сохраняет ID исходного MinIO; restore-test запускает именно его с
+`--network=none --read-only`, writable `/data` и `/tmp`, временными root credentials.
+Хранить этот образ в registry и отдельном `docker image save` архиве с SHA-256:
+восстановление не должно зависеть от повторной сборки или существования upstream.
+На новом хосте заранее восстановить тот же image ID; также нужны PostgreSQL,
+PHP utility image, bundle, runtime и state/backup согласно recovery runbook.
+Не удалять старый MinIO image и не обновлять storage image вместе с recovery.
+
+### Публикация MinIO/mc для CI (отдельная разрешаемая операция)
+
+CI не собирает и не публикует эти инфраструктурные образы автоматически. Перед
+первым pipeline отдельно разрешить следующие действия в GitLab Registry:
+
+1. Собрать оба рецепта для linux/amd64 по зафиксированным SHA выше, под новыми
+   локальными tags. Сохранить recipe revision/полный diff, хеши Dockerfile, базовые
+   digests, версии Go, build logs и image IDs. Уже проверенные image IDs повторно
+   не пересобирать без причины. Сверить recipes, labels и бинарные версии;
+   отсутствие исходных build logs/attestation явно записать как ограничение,
+   не выдавать текущий snapshot за доказанное происхождение образа.
+   Изменение любого рецепта, upstream
+   commit или базы требует новых tags и повторных проверок. Побитовая
+   воспроизводимость не доказана, в частности APK packages остаются плавающими.
+2. Перед публикацией выполнить `docker/minio/images.test.mjs` с явными
+   `MINIO_TEST_SERVER_IMAGE` / `MINIO_TEST_CLIENT_IMAGE` и
+   `MINIO_IMAGE_DOCKER_TEST=1`, затем существующий изолированный backup/restore
+   тест с тем же server image ID. При ошибке ничего не публиковать. Сохранить логи
+   и неизменные проверенные IDs; существующие тома/production не использовать.
+3. Выбрать два новых непереиспользуемых tags в репозиториях проекта:
+   `$REGISTRY_IMAGE/minio-community` и `$REGISTRY_IMAGE/mc-community`.
+   `REGISTRY_IMAGE` — реальное значение CI_REGISTRY_IMAGE из настроек проекта,
+   не локальное имя и не пример hostname. В tag включить upstream release,
+   recipe revision и уникальный build ID; проверить отсутствие tag в Registry.
+   Ограничить запись и исключить tags из cleanup policy; при доступности настроить
+   immutable/protected container tags. Не перемещать уже опубликованные tags.
+4. Только после разрешения публикации выполнить login через `--password-stdin`
+   с ограниченными read_registry/write_registry credentials и временным
+   DOCKER_CONFIG. Не передавать credentials в build args/образ и не включать
+   shell tracing. Опубликовать **проверенные IDs**, без повторной сборки:
+
+   ```sh
+   docker tag "${VERIFIED_MINIO_ID:?}" "${REGISTRY_IMAGE:?}/minio-community:${SERVER_PUBLISH_TAG:?}"
+   docker tag "${VERIFIED_MC_ID:?}" "$REGISTRY_IMAGE/mc-community:${CLIENT_PUBLISH_TAG:?}"
+   docker push "$REGISTRY_IMAGE/minio-community:$SERVER_PUBLISH_TAG"
+   docker push "$REGISTRY_IMAGE/mc-community:$CLIENT_PUBLISH_TAG"
+   docker image inspect "$REGISTRY_IMAGE/minio-community:$SERVER_PUBLISH_TAG" --format '{{json .RepoDigests}}'
+   docker image inspect "$REGISTRY_IMAGE/mc-community:$CLIENT_PUBLISH_TAG" --format '{{json .RepoDigests}}'
+   ```
+
+   Сохранить реальные RepoDigests и соответствие проверенным image IDs, отдельно
+   от OCI config digest/index/amd64 manifest. Если опубликован index, проверить его
+   linux/amd64 descriptor. Сохранить исходники/лицензии и image save архив согласно
+   требованиям восстановления выше. Digest нельзя вывести из имени локального tag.
+5. Создать в GitLab Settings → CI/CD → Variables две **несекретные** переменные:
+   `MINIO_CI_IMAGE` = полный опубликованный
+   `CI_REGISTRY_IMAGE/minio-community@sha256:<actual-published-digest>` и
+   `MINIO_MC_CI_IMAGE` = `CI_REGISTRY_IMAGE/mc-community@sha256:<actual-published-digest>`.
+   Здесь CI_REGISTRY_IMAGE в значении заменить буквальным адресом проекта; не
+   полагаться на nested variable expansion. Scope `*`, доступны branch/MR jobs
+   (не protected-only), без masking. Не менять protected production secrets.
+   Пустые переменные и tags вместо digest намеренно останавливают minio-images job.
+
+Отдельный job minio-images сначала валидирует ссылки, затем получает оба digest images и запускает
+существующий MinIO/mc contract test на локальном Docker daemon через Node tooling
+image. Проверяются read-only server/client, health, CA/HOME, bucket-init и S3
+запись/чтение. Ошибка блокирует backend tests, production integration и публикацию
+production PHP/Nginx, но не сборку/публикацию служебного CI PHP image. Frontend,
+release-checks и production-config имеют needs: []; PHP static jobs зависят только
+от build, backend tests — от build и minio-images. Production integration/publish,
+manifest и deploy сохраняют полный stage barrier без обходящих его needs. Helper
+получает через stdin только публичный тест; Registry credentials не передаются.
+Backend job использует `MINIO_CI_IMAGE` как service `minio`, PostgreSQL/RabbitMQ и
+прежний `wait-services.php` (head/create bucket через AWS SDK), затем Laravel tests.
+Production integration на своём runner заранее получает те же private digest
+images и передаёт их Compose как MINIO_IMAGE/MINIO_MC_IMAGE; credentials остаются
+в job, не в test helper. Application publish/manifest/protected-tag deploy gates
+не изменены. Нужен linux/amd64 runner с доступным Docker daemon/socket.
+
+Для same-project Registry предусмотрены существующие встроенные CI_REGISTRY_*
+credentials и стандартная авторизация Runner для services по CI_JOB_TOKEN;
+долгоживущий токен для CI заранее добавлять не требуется. Доступ не подтверждён:
+в GitLab UI проверить, что Registry включён, runner доступен для unprotected
+branch/MR refs, обе несекретные image variables имеют scope * и не protected-only,
+а пользователь запуска имеет право чтения private images (как минимум Reporter).
+Проверить отсутствие конфликтующего DOCKER_AUTH_CONFIG и настройки job-token
+access; fork MR pipelines не считать автоматически авторизованными в Registry
+родительского проекта и не выдавать им постоянные write credentials. Первый согласованный
+pipeline после публикации ещё должен подтвердить фактический Runner access. См. [GitLab Registry authentication](https://docs.gitlab.com/user/packages/container_registry/authenticate_with_container_registry/)
+и [private images/services](https://docs.gitlab.com/ci/docker/using_docker_images/).
+Пока образы не опубликованы и обе переменные не настроены, CI-конфигурация
+подготовлена, но новый pipeline не готов к успешному выполнению.
+
+#### Локальная подготовка и единая финальная отправка
+
+Операторский `publish.py`, его исходная версия, mock-тесты и результаты проверок
+хранятся в приватном долговременном каталоге вне checkout и `/tmp`. Не включать
+их вместе с image archives, runtime/credentials или build evidence в Git.
+Текущий инструмент имеет два явных режима (путь задаёт оператор):
+
+```sh
+# Offline: проверка двух закреплённых IDs/версий/recipes и резервное копирование.
+python3 "$MINIO_PUBLICATION_TOOL" --prepare "$MINIO_PUBLICATION_STORAGE"
+# Только после отдельного разрешения публикации, подтверждения Registry path
+# и исключительного окна записи либо immutable tags:
+REGISTRY_PROJECT_CONFIRMED=registry.gitlab.com/jihannaxz1/pizza-backend \
+REGISTRY_EXCLUSIVE_PUBLICATION=yes \
+  python3 "$MINIO_PUBLICATION_TOOL" --publish "$MINIO_PREPARED_EVIDENCE"
+```
+
+`--prepare` не обращается к Registry и не запрашивает credentials. Он сохраняет
+архив с SHA-256, проверяет полный OCI-граф (index, manifests, configs, layers и
+attestations) без `docker load`, записывает
+версии, inspect/history, recipes, HEAD/diff и копию самого инструмента. Хранилище
+принадлежит оператору, mode 0700; для чувствительных файлов используется umask 077.
+`--publish` повторно проверяет backup/IDs/recipes, запрашивает существующие
+credentials только в интерактивном терминале и использует временный Docker config.
+Оба режима фиксируют Docker daemon `/var/run/docker.sock`.
+
+Перед каждым push проверяется отсутствие тега; запись `push_started_result_unknown`
+сохраняется атомарно **до** команды. После push проверяются digest реального remote
+index, amd64 manifest/config digest, pull по digest, локальный image ID/RepoDigest
+и неизменность тега. У этих образов Docker containerd store использует OCI index
+как `.Id`; его нельзя сравнивать с config digest. Push сохраняет исходный index
+и attestations, без `--platform`, который отбросил бы их. Даже если digest
+локального index совпадёт с remote, Registry reference принимается только после
+реального GET/проверки manifest bytes и успешного pull, а не из локального `.Id`.
+Только успех обоих образов создаёт `ci-image-values.json`; GitLab variables инструмент
+не меняет. Ошибка/прерывание сохраняет `stopped_requires_reconciliation`, состояния
+каждого образа и уже полученные digests. Два push не атомарны; повторный запуск
+этой операции запрещён автоматически. После сбоя отдельно разрешить read-only
+сверку двух сохранённых тегов в Registry с ожидаемыми config IDs и проверку digest
+pull: не повторять push и не удалять частично опубликованный образ вслепую.
+После SIGKILL состояние перед push остаётся неопределённым; временный auth-каталог
+может потребовать отдельной безопасной очистки. Обычные ошибки очищают его.
+Локальная блокировка предотвращает конкурирующее выполнение одной операции,
+но исключительное окно/immutable tags по-прежнему нужны против других publishers.
+
+Перед финальным commit завершить все правки и локальные проверки. Публикация
+инфраструктуры и настройка двух CI-переменных требуют отдельных разрешений;
+их следует завершить до финального Git push, который создаёт branch/MR pipeline.
+Затем одним согласованным commit/push отправить полный набор исходников, тестов
+и документации. Промежуточные commit/push и Git tags для подготовки не выполнять.
+
+Production integration сначала запускает `archive-production-source.sh`: HEAD
+должен совпадать с `CI_COMMIT_SHA`, все новые MinIO/CI-файлы должны отслеживаться,
+tracked diff и untracked файлы запрещены. Ignored reports не мешают. Затем
+`git archive HEAD` передаёт полный зафиксированный checkout. До финального commit
+локальная рабочая директория намеренно не проходит gate; новые файлы не попадут
+в архив старого HEAD. Не обходить это копированием произвольного dirty checkout.
+Helper сверяет MinIO/mc digest references с полученным Compose перед сборкой.
+Production release получает те же явно выбранные ссылки через существующий
+runtime.env; application manifest остаётся PHP/Nginx. На существующем production
+смена storage images требует отдельной операции, не входит в публикацию для CI.
 
 После согласованного bootstrap открыть туннель с рабочей станции отдельным
 операторским SSH-ключом с разрешённым forwarding:
@@ -655,9 +895,9 @@ BACKUP_DOCKER_TEST=1 RELEASE_RUNTIME_DOCKER_TEST=1 \
 
 Дополнительно: PHPStan, PHP-CS-Fixer/Rector dry-run, Composer validate, Compose config,
 Laravel suites в изолированных сервисах, frontend npm test/build и production HTTP
-checks. CI job release-checks запускает одиннадцать daemon-free test-файлов (bootstrap, state/manifest,
+checks. CI job release-checks запускает четырнадцать daemon-free test-файлов (bootstrap, state/manifest,
 backup evidence, coordinator, continue, recovery intent/failures и fake MinIO), а также
-JS/shell syntax. Published-manifest уже проверяется frontend job; release PHP helpers
+JS/shell syntax. Published-manifest и `docker/minio/ci.test.mjs` проверяются frontend job; release PHP helpers
 и scheduler проходят php -l в phpstan job. Node 24 Alpine job требует APK util-linux
 и docker-cli-compose для flock/Compose config, но не Docker daemon/socket/DinD.
 Временный каталог runner должен разрешать exec для тестовых fake adapters.

@@ -47,6 +47,13 @@ RabbitMQ передаются из Compose; дублировать их в `app/
 `AWS_ENDPOINT=http://minio:9000` и path-style уже заданы в шаблоне.
 Не добавляйте эти локальные файлы и секреты в Git.
 
+MinIO и mc используются из собственных community-сборок. Перед запуском нужны
+локальные образы `pizza-infra/minio-community:RELEASE.2025-10-15T17-29-55Z` и
+`pizza-infra/mc-community:RELEASE.2025-08-13T08-35-41Z` либо явно заданные
+`MINIO_IMAGE` / `MINIO_MC_IMAGE` в `.env.local`. Рецепты, проверки и порядок
+доставки описаны в [RUNBOOK](docker/release/RUNBOOK.md#собственные-community-minio-и-mc-подготовка-не-deploy).
+Уже проверенные локальные image IDs можно использовать без пересборки.
+
 Для первого запуска сначала запустите только PHP и его зависимости
 (PostgreSQL, Redis, RabbitMQ и MinIO), затем установите Composer-зависимости:
 
@@ -966,6 +973,7 @@ npm run build
 | Job | Stage | Назначение |
 |---|---|---|
 | `build` | `build` | Сборка PHP `ci`/`prod`, публикация только CI-образа |
+| `minio-images` | `build` | Получение закреплённых MinIO/mc из Registry и контрактный тест |
 | `phpstan` | `code-quality` | Composer validation, статический анализ PHP и синтаксис release helpers/scheduler |
 | `php-cs-fixer` | `code-quality` | Проверка форматирования без изменений |
 | `rector` | `code-quality` | Проверка преобразований PHP без изменений |
@@ -994,14 +1002,16 @@ Job не объявляет Docker services, DinD или socket mounts; runner �
 CI-образе: job phpstan дополнительно выполняет `php -l` для release PHP helpers и scheduler,
 не загружая Laravel и env-файлы.
 
-Gate запускает десять test-файлов, включая release-tags: release/deploy, backup/backup-state,
-coordinator/coordinator-backup, release-run, recovery и minio-service. Покрываются
+Gate запускает четырнадцать test-файлов: runtime, release/deploy, diagnostics,
+release-tags, bootstrap/deploy-ssh, backup/backup-state, coordinator/coordinator-backup,
+release-run, recovery и minio-service. Покрываются
 manifest validation, допустимость переходов, повреждённые/неполные данные и backup,
 recovery intent (включая dangling symlinks), ошибки и SIGKILL, идемпотентность и
 sanitized CLI output. Lifecycle/MinIO используют fake adapters; тесты не выполняют
 реальный pull, restore или deploy. Все release `.mjs` проверяются через `node --check`,
 а release/CI/entrypoint shell-скрипты — через `sh -n`. Проверка published-manifest
-остаётся в frontend job и не дублируется новым gate.
+остаётся в frontend job вместе с `docker/minio/ci.test.mjs`, включая проверки
+архива исходников production integration.
 
 Полный Docker backup/recovery/worker набор остаётся локальным opt-in gate из runbook;
 readiness helper protocol и worker fixtures с Laravel/PHP также не входят в Node-only
@@ -1010,11 +1020,20 @@ job. Их перенос потребует отдельного согласо�
 нужно отдельно подтвердить после фиксации всех новых release-файлов.
 
 `build` явно использует публичный `docker:latest`, а не создаваемый CI-образ.
-Начальный порядок stages (`build` → `code-quality`) не позволяет запустить
-проверочные job до успешного завершения публикации. Все job наследуют
-одинаковые job rules. Для передачи CI-образа четырём PHP-job через Registry
-`needs` и `dependencies` не требуются; зависимость artifacts для production
-публикации описана в части 4.
+PHP static jobs используют `needs: [build]`, backend tests —
+`needs: [build, minio-images]`. Frontend, release-checks и production-config
+независимы и имеют `needs: []`. Production integration, publish, manifest и deploy
+сохраняют stage barriers. Все обычные job наследуют общие job rules;
+зависимость artifacts для production публикации описана в части 4.
+
+До первой отправки полного набора изменений отдельно опубликуйте проверенные
+MinIO/mc по процедуре [RUNBOOK](docker/release/RUNBOOK.md)
+и настройте `MINIO_CI_IMAGE` / `MINIO_MC_CI_IMAGE`: полные буквальные ссылки
+`<CI_REGISTRY_IMAGE>/minio-community@sha256:<реальный digest>` и
+`<CI_REGISTRY_IMAGE>/mc-community@sha256:<реальный digest>`. Scope `*`, не
+protected-only, без masking; значения доступны branch/MR jobs. Эти несекретные
+переменные не заменяют Registry credentials. Пока публикация и настройка не
+завершены, minio-images и зависимые jobs не готовы к успешному выполнению.
 
 Загрузку `image` выполняет Runner до `before_script`. Для встроенного Registry
 того же проекта он использует credentials, предоставленные GitLab, с
@@ -1027,7 +1046,8 @@ login в `before_script` проверочных job для загрузки `ima
 Pipeline запускается для merge request (включая draft), push в основную
 ветку (`CI_DEFAULT_BRANCH`) и push в остальные ветки без открытого MR.
 Push в feature-ветку с открытым MR не создаёт второй branch pipeline.
-Tags, schedules, API/trigger и ручной запуск через Run pipeline пока не
+Push Git-тегов также создаёт pipeline; deploy дополнительно ограничен защищёнными
+version-тегами. Schedules, API/trigger и ручной запуск через Run pipeline не
 включены. Название основной ветки не захардкожено.
 
 Перед запуском проверьте в GitLab:
@@ -1121,13 +1141,23 @@ Docker-сборка дополнительно подтверждает упак
 
 Порядок стадий: `build` → `code-quality` → `production-integration` → `publish` → `release` → `deploy`.
 Проверки и публикация сохраняют общие job rules; deploy имеет отдельное правило защищённого version-тега. Публикация разрешена только после
-успеха всех предыдущих стадий; `needs` не используется. Job `publish-production`
+успеха всех предыдущих стадий; у этих jobs нет обходящих stage barrier `needs`. Job `publish-production`
 скачивает artifacts только из `production-integration` через `dependencies`,
 что не отменяет порядок stages.
 
 Integration job использует существующий Node HTTP-сценарий в небольшом
 служебном образе Node 24 + Docker CLI/Compose. Checkout передаётся через
-`git archive HEAD` и stdin, без bind mount каталогов runner. Файлы canary
+`git archive HEAD` и stdin, без bind mount каталогов runner. После Registry login
+в `before_script`, но до pull MinIO/mc и Docker build внутри integration-скрипта,
+`archive-production-source.sh` требует совпадения `HEAD` с `CI_COMMIT_SHA`, наличия
+всех MinIO/CI-файлов в Git, отсутствия tracked изменений и untracked файлов
+(ignored artifacts не мешают). Текущий незакоммиченный checkout намеренно не
+проходит этот gate: untracked файлы и изменения рабочего дерева не входят в
+`git archive HEAD`. После единого финального commit/push Runner получает полный
+набор из этой ревизии. Промежуточные commit/push и Git tags для подготовки не нужны.
+MinIO/mc предварительно загружаются по CI digest references; helper получает
+`MINIO_IMAGE` / `MINIO_MC_IMAGE`, сверяет их с итоговым Compose до сборки PHP/Nginx.
+Файлы canary
 передаются в тестовый Nginx через `docker cp`. Проверяющий контейнер дополнительно подключается
 к случайно названной сети проверочного Compose-проекта; запросы идут
 на `http://nginx` внутри этой сети. Порты тестового приложения не публикуются.
@@ -1511,8 +1541,9 @@ storage format и production restore эта проверка не подтвер
 
 ```sh
 node --test docker/release/backup.test.mjs docker/release/deploy.test.mjs
-# Opt-in: локальные postgres:15-alpine, minio/minio и production PHP с ZipArchive.
-BACKUP_DOCKER_TEST=1 BACKUP_TEST_PHP_IMAGE="$LOCAL_PHP_IMAGE_ID" \
+# Opt-in: локальные postgres:15-alpine, собственный community MinIO и production PHP с ZipArchive.
+# Сборка/имена MinIO: docker/release/RUNBOOK.md; Docker-проверки требуют отдельного разрешения.
+BACKUP_DOCKER_TEST=1 BACKUP_TEST_PHP_IMAGE="${LOCAL_PHP_IMAGE_ID:?Set the local PHP utility image ID}" \
   node --test docker/release/backup-docker.test.mjs
 ```
 

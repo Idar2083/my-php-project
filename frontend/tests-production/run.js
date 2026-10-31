@@ -104,6 +104,19 @@ try {
   for (const service of ['postgres', 'redis', 'rabbitmq', 'minio']) {
     assert.equal(config.services[service].ports?.length || 0, 0, service)
   }
+  if (exportImages) {
+    // Publish only PHP/Nginx tested against the exact infrastructure selected by CI.
+    for (const [service, variable, repository] of [
+      ['minio', 'MINIO_IMAGE', 'minio-community'],
+      ['minio-init', 'MINIO_MC_IMAGE', 'mc-community'],
+    ]) {
+      const reference = process.env[variable] || ''
+      const prefix = `${process.env.CI_REGISTRY_IMAGE}/${repository}@sha256:`
+      assert.ok(reference.startsWith(prefix) && /^[a-f0-9]{64}$/.test(reference.slice(prefix.length)),
+        'Production integration requires the project MinIO/mc digest references')
+      assert.equal(config.services[service].image, reference)
+    }
+  }
   for (const key of ['APP_KEY', 'JWT_SECRET']) {
     const missing = spawnSync('docker', [...composeArgs, 'config', '--quiet'], {
       cwd: root, env: { ...environment, [key]: '' }, encoding: 'utf8', timeout: 30000,
