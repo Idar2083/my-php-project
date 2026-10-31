@@ -189,19 +189,29 @@ application digest images из manifest. Загрузку инфраструкт
 
 ### Собственные community MinIO и mc (подготовка, не deploy)
 
-Официальные community repositories недоступны по проверенным Docker Hub/Quay
-адресам. Рецепты `docker/minio/Dockerfile.server` и `Dockerfile.mc` собирают
-исходники непосредственно из официальных Git repositories с проверкой commit SHA:
+Рецепты `docker/minio/Dockerfile.server` и `Dockerfile.mc` собирают локальные
+сохранённые inputs через обязательные BuildKit named contexts. Внутри build нет
+`git fetch`, сетевого разрешения Go modules или сетевой установки APK. Перед
+сборкой оператор должен получить эти contexts из проверенного локального evidence;
+обычный `docker build`/Compose build без named contexts намеренно не является
+поддерживаемым способом сборки:
 
 | Компонент | Официальный тег | Commit SHA |
 | --- | --- | --- |
 | [MinIO](https://github.com/minio/minio) | `RELEASE.2025-10-15T17-29-55Z` | `9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a` |
 | [mc](https://github.com/minio/mc) | `RELEASE.2025-08-13T08-35-41Z` | `7394ce0dd2a80935aded936b09fa12cbb3cb8096` |
 
-Перед разрешением сборки отдельно подтвердить tag→SHA через GitHub API и
-manifest/config баз через Docker Registry API, без загрузки слоёв. Исходники
-upstream и первичные ответы registry в репозитории не сохранены, поэтому локальное
-ревью не подтверждает соответствие приведённых значений официальным источникам.
+Исходные архивы и Git metadata получены ранее и сохраняются вне checkout. Dockerfile
+проверяет SHA-256 исходного архива, full commit из Git metadata и точные SHA-256
+`go.mod`/`go.sum`; Go module cache проверяется `go mod verify` при `GOPROXY=off` и
+`GOSUMDB=off`. APK contexts содержат только APK выбранных solver-транзакций и
+`SHA256SUMS`; Dockerfile проверяет digest файла checksums и каждый APK. Индексы
+v3.24/v3.22 ранее проверены подписью с key ID `6165ee59`, но полномочия этого ключа
+независимо не подтверждены. Поэтому содержимое согласуется с подписанными индексами,
+однако доверие к издателю Alpine остаётся provisional. APK SHA-256 не снимает это
+ограничение. Подлинность издателей OCI и MinIO также имеет ограничения из
+сопроводительных evidence; MinIO commit/tag не подписаны.
+
 Оба FROM предполагают **linux/amd64 manifest**, не index:
 
 | База | Manifest digest |
@@ -209,34 +219,36 @@ upstream и первичные ответы registry в репозитории �
 | Docker Official Image `golang:alpine`, Go `1.27.3` | `sha256:bff16a94c0b4b6d9642581e2a3aa81beb3edb940b2f5a3aac1d22c6a68cb7747` |
 | Docker Official Image `alpine:3.22` | `sha256:dc92f017beea8e7f43263073d717f7bc011228c95d5312e440deb4d035bb4eec` |
 
-Go выбран новее указанных upstream toolchain 1.24.8/1.23.10. У сохранившихся
-trial-образов проверены `--version`, release/commit labels и runtime Go 1.27.3
-linux/amd64; MinIO/mc contract и изолированный backup/restore прошли 2026-10-31.
-Это подтверждает проверенное поведение этих image IDs. В сохранённом OCI archive
-обнаружены BuildKit SLSA v1 attestations: subject соответствует amd64 manifest,
-dependency digests совпадают с обеими базами выше, сохранены timestamps сборок.
-Attestations не проверены независимой подписью; они не заменяют исходные build logs
-и доказанную связь с текущими Dockerfile. Подробная операторская
-запись и сценарий публикации хранятся приватно вне Git и `/tmp`.
-`GOTOOLCHAIN=local` исключает автоматическую подмену компилятора,
-`GOAMD64=v1` не требует расширенного CPU ISA, `CGO_ENABLED=0` исключает C toolchain.
-Модули проверяются через `go mod verify`; изменение go.mod/go.sum отклоняется.
-Сборки НЕ объявляются воспроизводимыми: APK indexes и версии прямых/транзитивных
-пакетов ОС не зафиксированы. Go dependency graph берётся из go.mod/go.sum указанного
-commit, но полнота фиксации транзитивных модулей ещё требует проверки исходников;
-go mod verify не является проверкой уязвимостей. Доступность Git/Go modules,
-настройки proxy/checksum service, версия BuildKit и timestamps OCI не зафиксированы.
-Две независимые сборки бинарников и OCI images не сравнивались. Community upstream
-архивирован; своя сборка не обеспечивает будущие security fixes. Сохранить LICENSE,
-CREDITS и соответствующий исходный код для соблюдения условий upstream лицензии.
+Локальные image IDs прошли MinIO image contract и isolated backup/restore tests
+2026-10-31. Go toolchain закреплён digest-ом; `GOTOOLCHAIN=local`, `GOAMD64=v1` и
+`CGO_ENABLED=0` исключают автоматическую замену toolchain и C toolchain. Build
+выполняется с `--network=none`; базовые OCI inputs загружены из сохранённых layers.
+Это подтверждает offline выполнение текущего recipe, но две независимые сборки не
+сравнивались побитово. В APK payload для зафиксированных пакетов не обнаружены
+отдельные license/notice файлы; выражения лицензий из `.PKGINFO` и отсутствие таких
+текстов документированы в APK evidence. Образы включают upstream `LICENSE`,
+`CREDITS` и `NOTICE`. Перед публикацией отдельно проверить полноту сторонних
+уведомлений; это не юридическое заключение. Community upstream архивирован; своя
+сборка не обеспечивает будущие security fixes.
 
-Только после отдельного разрешения, локально из корня репозитория:
+Подготовить абсолютные пути к локальным contexts и выполнить только после отдельного
+разрешения:
 
 ```sh
-docker buildx build --platform linux/amd64 --load \
+docker buildx build --pull=false --platform linux/amd64 --load \
+  --build-context minio-source="$MINIO_SOURCE_CONTEXT" \
+  --build-context minio-git="$MINIO_GIT_CONTEXT" \
+  --build-context gomodcache="$GOMODCACHE_CONTEXT" \
+  --build-context apk-build="$APK_BUILD_CONTEXT" \
+  --build-context apk-runtime="$SERVER_APK_RUNTIME_CONTEXT" \
   -f docker/minio/Dockerfile.server \
   -t pizza-infra/minio-community:RELEASE.2025-10-15T17-29-55Z docker/minio
-docker buildx build --platform linux/amd64 --load \
+docker buildx build --pull=false --platform linux/amd64 --load \
+  --build-context mc-source="$MC_SOURCE_CONTEXT" \
+  --build-context mc-git="$MC_GIT_CONTEXT" \
+  --build-context gomodcache="$GOMODCACHE_CONTEXT" \
+  --build-context apk-build="$APK_BUILD_CONTEXT" \
+  --build-context apk-runtime="$MC_APK_RUNTIME_CONTEXT" \
   -f docker/minio/Dockerfile.mc \
   -t pizza-infra/mc-community:RELEASE.2025-08-13T08-35-41Z docker/minio
 MINIO_IMAGE_DOCKER_TEST=1 node --test docker/minio/images.test.mjs

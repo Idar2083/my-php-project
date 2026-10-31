@@ -3,30 +3,44 @@ FROM golang:alpine@sha256:bff16a94c0b4b6d9642581e2a3aa81beb3edb940b2f5a3aac1d22c
 
 ARG TARGETOS
 ARG TARGETARCH
-ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1 GOTOOLCHAIN=local GOFLAGS=-mod=readonly
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1 GOTOOLCHAIN=local GOFLAGS=-mod=readonly GOPROXY=off GOSUMDB=off
 WORKDIR /src
-RUN test "$TARGETOS/$TARGETARCH" = linux/amd64 \
+COPY --from=minio-source /server-source.tar /tmp/server-source.tar
+COPY --from=minio-git / /src/.git/
+COPY --from=gomodcache / /go/pkg/mod/
+COPY --from=apk-build / /tmp/apks/
+RUN --network=none test "$TARGETOS/$TARGETARCH" = linux/amd64 \
  && test "$(go env GOVERSION)" = go1.27.3 \
- && apk add --no-cache git ca-certificates \
- && git init . \
- && git remote add origin https://github.com/minio/minio.git \
- && git fetch --depth=1 origin 9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a \
- && git checkout --detach FETCH_HEAD \
- && test "$(git rev-parse HEAD)" = 9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a
-RUN go mod download \
+ && echo '65a15435c1df05f82a3ac168759772ccac8aa01660a3d3bc23dd4c70dad442b1  /tmp/apks/SHA256SUMS' | sha256sum -c - \
+ && (cd /tmp/apks && sha256sum -c SHA256SUMS) \
+ && apk --repositories-file /dev/null add --no-cache --no-network /tmp/apks/*.apk \
+ && rm -rf /tmp/apks \
+ && test "$(sha256sum /tmp/server-source.tar | cut -d' ' -f1)" = a7f4b1fa2be13de80f23afed9b41cc2e6cb387fe30cb2f8b60e09d89b13036cb \
+ && tar -xf /tmp/server-source.tar -C /src \
+ && rm /tmp/server-source.tar \
+ && test "$(git log --format=%H -n1)" = 9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a \
+ && test "$(sha256sum go.mod | cut -d' ' -f1)" = 673f06144e90bc045f0a20050d2874c52e551be5bfbd70dff6e76b66da0db702 \
+ && test "$(sha256sum go.sum | cut -d' ' -f1)" = 86e062349c7abdce0465561bb409d410a95b00b0969ba05d5fb5f2e3550a5cd4 \
+ && git diff --exit-code -- go.mod go.sum
+RUN --network=none go mod download \
  && go mod verify \
  && minio_ldflags="$(MINIO_RELEASE=RELEASE go run buildscripts/gen-ldflags.go 2025-10-15T17:29:55Z)" \
  && go build -trimpath -buildvcs=false -tags kqueue \
     -ldflags "$minio_ldflags" \
     -o /out/minio . \
- && git diff --exit-code -- go.mod go.sum
+ && test "$(sha256sum go.mod | cut -d' ' -f1)" = 673f06144e90bc045f0a20050d2874c52e551be5bfbd70dff6e76b66da0db702 \
+ && test "$(sha256sum go.sum | cut -d' ' -f1)" = 86e062349c7abdce0465561bb409d410a95b00b0969ba05d5fb5f2e3550a5cd4
 
 # linux/amd64 manifest of Docker Official Image alpine:3.22.
 FROM alpine:3.22@sha256:dc92f017beea8e7f43263073d717f7bc011228c95d5312e440deb4d035bb4eec
-RUN apk add --no-cache curl ca-certificates
+COPY --from=apk-runtime / /tmp/apks/
+RUN --network=none echo 'deab98e47fcbdd3c8f4f164aa992e5299b019ac23b89dd826acfb1cb89951ea8  /tmp/apks/SHA256SUMS' | sha256sum -c - \
+ && (cd /tmp/apks && sha256sum -c SHA256SUMS) \
+ && apk --repositories-file /dev/null add --no-cache --no-network /tmp/apks/*.apk \
+ && rm -rf /tmp/apks
 ENV HOME=/tmp
 COPY --from=build /out/minio /usr/bin/minio
-COPY --from=build /src/LICENSE /src/CREDITS /licenses/
+COPY --from=build /src/LICENSE /src/CREDITS /src/NOTICE /licenses/
 LABEL org.opencontainers.image.source="https://github.com/minio/minio" \
       org.opencontainers.image.revision="9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a" \
       org.opencontainers.image.version="RELEASE.2025-10-15T17-29-55Z" \
