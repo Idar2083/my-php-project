@@ -206,10 +206,11 @@ application digest images из manifest. Загрузку инфраструкт
 `go.mod`/`go.sum`; Go module cache проверяется `go mod verify` при `GOPROXY=off` и
 `GOSUMDB=off`. APK contexts содержат только APK выбранных solver-транзакций и
 `SHA256SUMS`; Dockerfile проверяет digest файла checksums и каждый APK. Индексы
-v3.24/v3.22 ранее проверены подписью с key ID `6165ee59`, но полномочия этого ключа
-независимо не подтверждены. Поэтому содержимое согласуется с подписанными индексами,
-однако доверие к издателю Alpine остаётся provisional. APK SHA-256 не снимает это
-ограничение. Подлинность издателей OCI и MinIO также имеет ограничения из
+v3.24/v3.22 ранее проверены подписью с key ID `6165ee59`. Сохранённый отчёт
+`alpine-key-trust-20261101/REPORT.md` дополнительно связывает полный hash ключа
+и его x86_64 signing role с официальным Alpine APKBUILD по проверенному HTTPS.
+Это conventional Web PKI trust, не независимая offline certification; отсутствующие
+исторические bytes v3.24 этим не восстанавливаются. Подлинность издателей OCI и MinIO также имеет ограничения из
 сопроводительных evidence; MinIO commit/tag не подписаны.
 
 Оба FROM предполагают **linux/amd64 manifest**, не index:
@@ -308,7 +309,7 @@ CI не собирает и не публикует эти инфраструк�
    не выдавать текущий snapshot за доказанное происхождение образа.
    Изменение любого рецепта, upstream
    commit или базы требует новых tags и повторных проверок. Побитовая
-   воспроизводимость не доказана, в частности APK packages остаются плавающими.
+   воспроизводимость не доказана, хотя финальные APK inputs уже закреплены проверяемыми SHA-256.
 2. Перед публикацией выполнить `docker/minio/images.test.mjs` с явными
    `MINIO_TEST_SERVER_IMAGE` / `MINIO_TEST_CLIENT_IMAGE` и
    `MINIO_IMAGE_DOCKER_TEST=1`, затем существующий изолированный backup/restore
@@ -321,19 +322,12 @@ CI не собирает и не публикует эти инфраструк�
    recipe revision и уникальный build ID; проверить отсутствие tag в Registry.
    Ограничить запись и исключить tags из cleanup policy; при доступности настроить
    immutable/protected container tags. Не перемещать уже опубликованные tags.
-4. Только после разрешения публикации выполнить login через `--password-stdin`
-   с ограниченными read_registry/write_registry credentials и временным
-   DOCKER_CONFIG. Не передавать credentials в build args/образ и не включать
-   shell tracing. Опубликовать **проверенные IDs**, без повторной сборки:
-
-   ```sh
-   docker tag "${VERIFIED_MINIO_ID:?}" "${REGISTRY_IMAGE:?}/minio-community:${SERVER_PUBLISH_TAG:?}"
-   docker tag "${VERIFIED_MC_ID:?}" "$REGISTRY_IMAGE/mc-community:${CLIENT_PUBLISH_TAG:?}"
-   docker push "$REGISTRY_IMAGE/minio-community:$SERVER_PUBLISH_TAG"
-   docker push "$REGISTRY_IMAGE/mc-community:$CLIENT_PUBLISH_TAG"
-   docker image inspect "$REGISTRY_IMAGE/minio-community:$SERVER_PUBLISH_TAG" --format '{{json .RepoDigests}}'
-   docker image inspect "$REGISTRY_IMAGE/mc-community:$CLIENT_PUBLISH_TAG" --format '{{json .RepoDigests}}'
-   ```
+4. Только после закрытия блокеров и отдельного разрешения публикации использовать
+   `--publish` исправленного операторского инструмента, описанного ниже, с новой
+   проверенной evidence. Существующие read_registry/write_registry credentials
+   вводятся интерактивно и передаются только через память. Не выполнять ручные
+   `docker tag`/`docker push` в обход журнала и проверок инструмента; не передавать
+   credentials в build args/образ и не включать shell tracing.
 
    Сохранить реальные RepoDigests и соответствие проверенным image IDs, отдельно
    от OCI config digest/index/amd64 manifest. Если опубликован index, проверить его
@@ -383,26 +377,79 @@ pipeline после публикации ещё должен подтверди�
 Операторский `publish.py`, его исходная версия, mock-тесты и результаты проверок
 хранятся в приватном долговременном каталоге вне checkout и `/tmp`. Не включать
 их вместе с image archives, runtime/credentials или build evidence в Git.
-Текущий инструмент имеет два явных режима (путь задаёт оператор):
+Исправленная версия хранится отдельно в приватном каталоге
+`/home/tsimib/pizza-backend-artifacts/minio-publication-ready-20261101/`;
+старые `publish.py`, операции, журналы, указатели и архивы не изменять.
+Текущий инструмент имеет три явных режима (путь задаёт оператор):
 
 ```sh
 # Offline: проверка двух закреплённых IDs/версий/recipes и резервное копирование.
 python3 "$MINIO_PUBLICATION_TOOL" --prepare "$MINIO_PUBLICATION_STORAGE"
-# Только после отдельного разрешения публикации, подтверждения Registry path
-# и исключительного окна записи либо immutable tags:
+# Только после отдельного разрешения: сначала доставка source/notices package,
+# затем образы. Для обоих режимов подтвердить Registry path и исключительное окно.
+REGISTRY_PROJECT_CONFIRMED=registry.gitlab.com/jihannaxz1/pizza-backend \
+REGISTRY_EXCLUSIVE_PUBLICATION=yes \
+  python3 "$MINIO_PUBLICATION_TOOL" --publish-sources "$MINIO_PREPARED_EVIDENCE"
+# Образы:
 REGISTRY_PROJECT_CONFIRMED=registry.gitlab.com/jihannaxz1/pizza-backend \
 REGISTRY_EXCLUSIVE_PUBLICATION=yes \
   python3 "$MINIO_PUBLICATION_TOOL" --publish "$MINIO_PREPARED_EVIDENCE"
 ```
 
-`--prepare` не обращается к Registry и не запрашивает credentials. Он сохраняет
+`--prepare` не обращается к Registry и не запрашивает credentials. Он создаёт
+новую операцию schema 4 с уникальным именем; старые schema 2/3 evidence и trial IDs
+для публикации отклоняются. Закреплена финальная пара локальных IDs:
+
+- MinIO: `sha256:2a4a6bdc196960d85ececed03cdd37faea0f2cb90ebc6fdc01fb03586f3a16f6`,
+  BuildKit record `m1aamt8p0fzvo4h3vmn9wlojd`.
+- mc: `sha256:0da104852e8288d0a15b377dfdfffc721173cde3730f65fbc92df5bd115da992`,
+  BuildKit record `1zfou1x7hkdbooajguz3gkt05`.
+
+Это локальные OCI index IDs, а не подтверждённые Registry references.
+Инструмент экспортирует существующие records через `buildx history export`,
+проверяет output digests, исходные blob digests provenance и побайтное совпадение
+встроенных Dockerfile с текущими recipes. Он сохраняет исходный bundle, records,
+status logs, расширенный provenance и извлечённые Dockerfile; затем связывает
+output index с полным image archive и subject встроенной in-toto attestation с
+linux/amd64 manifest. Параметры, dependencies и времена inline provenance сверяются
+с расширенным BuildKit predicate. Сам predicate из build record не содержит subject:
+его связь с образом проверяется через record output и архивную attestation.
+Это локальная проверка целостности, не независимая подпись издателя; BuildKit
+помечает resolvedDependencies неполными для локальных named contexts.
+Инструмент сохраняет
 архив с SHA-256, проверяет полный OCI-граф (index, manifests, configs, layers и
 attestations) без `docker load`, записывает
 версии, inspect/history, recipes, HEAD/diff и копию самого инструмента. Хранилище
 принадлежит оператору, mode 0700; для чувствительных файлов используется umask 077.
 `--publish` повторно проверяет backup/IDs/recipes, запрашивает существующие
-credentials только в интерактивном терминале и использует временный Docker config.
+credentials только в интерактивном терминале. GitLab password/token и scoped bearer
+остаются в памяти; Docker Engine получает bearer через request-scoped
+`X-Registry-Auth` по фиксированному Unix socket. Нет `docker login`, auth-файлов,
+credential subprocess arguments или credential-bearing free-form logs. Проверяются
+TLS, запрет redirects, daemon debug и insecure Registry configuration.
 Оба режима фиксируют Docker daemon `/var/run/docker.sock`.
+
+В новой evidence сохраняются результаты проверок и SHA-256 всех подготовленных
+файлов; перед публикацией они перепроверяются вместе с OCI-графом и build records.
+Проверяются LICENSE/NOTICE/CREDITS из фактических слоёв обоих образов относительно
+сохранённых upstream материалов. Подготовлен отдельный закреплённый комплект
+исходников и notices; точные результаты, способы доставки и окончательный порядок
+действий приведены в [итоге подготовки MinIO/mc](MINIO-PUBLICATION.md).
+Прежние общие лицензионные блокеры заменены проверкой конкретного dossier по
+SHA-256, его image IDs, проверенным исходникам и notices. Исторические evidence
+не переписываются. Независимая цифровая подпись — отдельное усиление, не новый
+обязательный gate этой процедуры; существующие проверки provenance сохраняются.
+
+**До первого push образов** обязателен source/notices package с равноценным доступом
+для всех получателей образов. `--publish-sources` использует scoped package token
+через интерактивный ввод, сохраняет неопределённый результат до PUT и проверяет
+скачивание/хеш. Если пакет уже есть с тем же хешем, PUT не выполняется; иной хеш,
+неясный 404, TLS/auth/redirect ошибка останавливают операцию. После сбоя PUT не
+повторять автоматически. Для `--publish` credentials дополнительно требуют
+`read_package_registry`: инструмент скачивает и сверяет source archive перед
+первым push. Basic auth направляется только в фиксированный API проекта GitLab;
+разрешённый signed redirect в `storage.googleapis.com` получает запрос без auth.
+Ни source, ни image publication не выполняются в режиме `--prepare`.
 
 Перед каждым push проверяется отсутствие тега; запись `push_started_result_unknown`
 сохраняется атомарно **до** команды. После push проверяются digest реального remote
@@ -418,8 +465,8 @@ index, amd64 manifest/config digest, pull по digest, локальный image 
 этой операции запрещён автоматически. После сбоя отдельно разрешить read-only
 сверку двух сохранённых тегов в Registry с ожидаемыми config IDs и проверку digest
 pull: не повторять push и не удалять частично опубликованный образ вслепую.
-После SIGKILL состояние перед push остаётся неопределённым; временный auth-каталог
-может потребовать отдельной безопасной очистки. Обычные ошибки очищают его.
+После SIGKILL состояние перед push остаётся неопределённым; автоматический
+повторный push запрещён. Auth-каталоги инструмент не создаёт.
 Локальная блокировка предотвращает конкурирующее выполнение одной операции,
 но исключительное окно/immutable tags по-прежнему нужны против других publishers.
 
