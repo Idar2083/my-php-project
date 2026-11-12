@@ -6,8 +6,37 @@
 
 ## GitLab tag pipeline и SSH deploy
 
+### Граница разрешения перед первым production tag
+
+`deploy-tools/` — серверный установочный каталог, а не каталог checkout.
+Его исходники находятся в `docker/release/`; точный комплект пяти файлов указан
+ниже в разделе подготовки VPS. Перед первым тегом сверить SHA-256 каждого
+серверного файла с выбранным локальным коммитом. Не копировать весь каталог
+`docker/release/` поверх существующих серверных файлов.
+
+В текущем `.gitlab-ci.yml` deploy-job автоматический (`when: on_success`),
+ручного gate между созданием защищённого version tag и SSH-доставкой нет.
+Разрешение только на аудит не разрешает создание/push тега или запуск job.
+Первый job доставляет bundle и останавливается с `FIRST_BOOTSTRAP_REQUIRED`;
+bootstrap запускается оператором только после отдельного разрешения.
+После bootstrap повторяют только deploy-job того же pipeline.
+
+Если DNS/TLS и host Nginx уже подготовлены, закрытый запуск без домена ниже
+не является обязательным повторным этапом. До bootstrap оператор подтверждает
+`APP_URL=https://anyapizza.ru` и соответствие loopback bind Docker Nginx
+существующему upstream host Nginx. Runtime проверять без вывода содержимого;
+изменения runtime, Nginx или TLS согласовывать отдельно.
+
+Release bundle не сохраняется отдельным CI artifact: `deploy-ssh.mjs` создаёт
+JSON в памяти из allowlist `bundleFiles` в `deploy-bundle.mjs` (23 файла),
+manifest и identity текущего pipeline. На сервере дополнительно создаются
+пустой `.env`, `release.json` и `delivery.json`. Отсутствие artifact с именем
+release-bundle соответствует этому протоколу.
+
 Реализация проверяется локально с fake transport; **production deploy на VPS не
-проверен**. Покупка VPS, DNS и TLS остаются отдельной подготовкой. Формат релиза:
+проверен**. VPS, DNS и TLS уже подготовлены по результатам первого аудита;
+подтверждённые проверки и оставшиеся условия описаны в
+[FIRST-PRODUCTION-AUDIT.md](FIRST-PRODUCTION-AUDIT.md). Формат релиза:
 `vMAJOR.MINOR.PATCH`, например `v1.2.3`, без ведущих нулей и prerelease. Это
 принятая для этого deploy политика; теги нельзя перемещать или переиспользовать.
 
@@ -30,7 +59,12 @@ FD 9/flock каталога state на весь backup/continue. Job старш�
    Если тариф GitLab не предоставляет protected environments, обязательной границей
    остаются protected tags/variables и права создания тегов; оцените эту политику
    доступа до включения автоматического deploy.
-3. Добавить следующие project CI/CD variables. Все protected, scope `production`.
+3. Проверить следующие project CI/CD variables. Все шесть — Protected.
+   Подтверждённый scope текущей установки — `All (default)`, а не `production`.
+   `SSH_PRIVATE_KEY` и `SSH_KNOWN_HOSTS` имеют тип File.
+   Protected Tag `v*` подтверждён, Allowed to create — Maintainers.
+   Protected Environment не подтверждён: раздел в интерфейсе не обнаружен;
+   не считать environment защищённым без отдельного подтверждения.
    File variables загружаются файлами, не строковыми путями к файлам на runner.
 
 | Variable | Тип | Назначение |
