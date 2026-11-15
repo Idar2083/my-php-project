@@ -7,7 +7,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { create } from './manifest.mjs'
 import { buildBundle, bundleFiles, deployAllowed, hash, parseBundle, serverRoot, verifyPublication } from './deploy-bundle.mjs'
-import { deliver } from './deploy-ssh.mjs'
+import { deliver, diagnostic } from './deploy-ssh.mjs'
 import { installBundle, receive, runCoordinator } from './deploy-server.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
@@ -139,8 +139,12 @@ test('real ssh-keygen rejects invalid private key and unmatched or malformed kno
   try {
     deliver(config, bundle())
     assert.deepEqual(JSON.parse(fs.readFileSync(received, 'utf8')), bundle())
-    fs.writeFileSync(join(bin, 'ssh'), '#!/bin/sh\nexit 1\n')
-    assert.throws(() => deliver(config, bundle()))
+    fs.writeFileSync(join(bin, 'ssh'), '#!/bin/sh\necho \"Permission denied PRIVATE_CANARY\" >&2\nexit 255\n')
+    assert.throws(() => deliver(config, bundle()), error => {
+      assert.match(error.message, /ssh-connection-or-transport.*exit_code=255.*stderr: Permission denied\./)
+      assert.doesNotMatch(error.message, /PRIVATE_CANARY/)
+      return true
+    })
   } finally { process.env.PATH = originalPath;delete process.env.PIZZA_TEST_DELIVERY }
   fs.writeFileSync(hosts, 'other.example.test ' + publicKey + '\n')
   assert.throws(() => deliver(config, bundle()))
@@ -240,4 +244,70 @@ test('SSH adapter uses the same nonblocking directory lock as release.sh', async
       await exited
     }
   }
+}))
+
+test('diagnostics expose only fixed categories, process metadata and recognized stderr', () => {
+  const secret = 'PRIVATE_CANARY=secret key runtime.env bundle CI variable'
+  for (const [status, category] of [[255, 'ssh-connection-or-transport'], [1, 'server-command']]) {
+    const output = diagnostic({ status, stderr: secret + '\nPermission denied (publickey).', message: secret }, 'ssh-command')
+    assert.match(output, new RegExp('\\[' + category + '\\]'))
+    assert.match(output, new RegExp('exit_code=' + status))
+    assert.match(output, /stderr: Permission denied\./)
+    assert.doesNotMatch(output, /PRIVATE_CANARY|publickey|runtime.env|bundle/)
+  }
+  assert.match(diagnostic({ code: 'ENOENT' }, 'private-key-file'), /system_code=ENOENT/)
+  assert.match(diagnostic({ code: 'ETIMEDOUT', signal: 'SIGTERM' }, 'private-key-validation'), /system_code=ETIMEDOUT signal=SIGTERM/)
+  assert.match(diagnostic({ stderr: secret }, 'bundle-build'), /unrecognized output withheld/)
+  assert.doesNotMatch(diagnostic({ stderr: secret, code: secret, signal: secret }, 'bundle-build'), /PRIVATE_CANARY/)
+  assert.match(diagnostic({ stderr: 'Validated bundle delivered. Manual first bootstrap is required; no production services were started.' }, 'ssh-command'), /Manual first bootstrap is required/)
+})
+test('spawn diagnostics preserve null status, allowed system codes and signals without arbitrary output', () => {
+  const secret = 'PRIVATE_CANARY'
+  const hidden = { message: secret, stdout: secret, stderr: secret, spawnargs: [secret] }
+  assert.equal(diagnostic({ status: null }, 'ssh-command'), 'Production deployment failed [ssh-process]. status=null\n')
+  assert.equal(diagnostic({}, 'ssh-command'), 'Production deployment failed [ssh-process].\n')
+  for (const code of ['EAGAIN', 'ENOENT', 'EACCES', 'EPERM', 'EISDIR', 'ETIMEDOUT', 'ENOBUFS']) {
+    assert.equal(diagnostic({ ...hidden, status: null, code }, 'private-key-validation'),
+      'Production deployment failed [private-key-validation]. status=null system_code=' + code + ' stderr: [unrecognized output withheld]\n')
+  }
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGKILL', 'SIGPIPE']) {
+    assert.equal(diagnostic({ ...hidden, status: null, signal }, 'ssh-command'),
+      'Production deployment failed [ssh-process]. status=null signal=' + signal + ' stderr: [unrecognized output withheld]\n')
+  }
+  assert.equal(diagnostic({ ...hidden, status: null, code: secret, signal: secret }, 'ssh-command'),
+    'Production deployment failed [ssh-process]. status=null stderr: [unrecognized output withheld]\n')
+})
+test('delivery failures identify file, key, host matching and remote command stages without secrets', () => fixture(path => {
+  const key = join(path, 'private'), hosts = join(path, 'hosts')
+  fs.writeFileSync(key, 'PRIVATE_CANARY');fs.writeFileSync(hosts, 'vps.example.test ssh-ed25519 AAAA\n')
+  const config = { DEPLOY_HOST: 'vps.example.test', DEPLOY_USER: 'pizza', DEPLOY_PORT: '22', DEPLOY_ROOT: '/srv/pizza', SSH_PRIVATE_KEY: key, SSH_KNOWN_HOSTS: hosts }
+  for (const [index, category] of ['private-key-validation', 'known-hosts-validation', 'known-hosts-match', 'server-command'].entries()) {
+    let call = 0
+    assert.throws(() => deliver(config, bundle(), () => {
+      if (call++ === index) throw { status: 1, stderr: 'PRIVATE_CANARY', message: 'PRIVATE_CANARY' }
+    }), error => {
+      assert.ok(error.message.includes('[' + category + ']'))
+      assert.match(error.message, /exit_code=1/)
+      assert.doesNotMatch(error.message, /PRIVATE_CANARY/)
+      return true
+    })
+  }
+  for (const [name, category] of [['SSH_PRIVATE_KEY', 'private-key-file'], ['SSH_KNOWN_HOSTS', 'known-hosts-file']]) {
+    assert.throws(() => deliver({ ...config, [name]: join(path, 'missing') }, bundle()), new RegExp(category + '.*system_code=ENOENT'))
+  }
+  fs.writeFileSync(hosts, 'PRIVATE_CANARY malformed')
+  assert.throws(() => deliver(config, bundle()), /known-hosts-format/)
+}))
+
+test('CLI catch reports safe repository failure without child stdout, stderr or CI secrets', () => fixture(path => {
+  const bin = join(path, 'bin')
+  fs.mkdirSync(bin)
+  fs.writeFileSync(join(bin, 'git'), '#!/bin/sh\necho PRIVATE_CANARY\necho PRIVATE_CANARY >&2\nexit 42\n', { mode: 0o700 })
+  const result = spawnSync(process.execPath, [join(root, 'docker/release/deploy-ssh.mjs')], {
+    encoding: 'utf8', cwd: path, env: { ...process.env, PATH: bin, CI_COMMIT_TAG: 'PRIVATE_CANARY' },
+  })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /repository-tag.*exit_code=42.*unrecognized output withheld/)
+  assert.match(result.stderr, /no automatic rollback/)
+  assert.doesNotMatch(result.stdout + result.stderr, /PRIVATE_CANARY/)
 }))
