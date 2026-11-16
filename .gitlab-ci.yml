@@ -1,0 +1,342 @@
+stages:
+  - build
+  - code-quality
+  - production-integration
+  - publish
+  - release
+  - deploy
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH'
+    - when: never
+
+default:
+  image:
+    name: "$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID"
+    pull_policy: always
+
+variables:
+  DOCKER_HOST: unix:///var/run/docker.sock
+  DOCKER_TLS_CERTDIR: ""
+
+.pipeline-job:
+  rules:
+    - when: on_success
+
+build:
+  extends: .pipeline-job
+  stage: build
+  image: docker:latest
+  before_script: &registry-login
+    - |
+      test -n "$CI_REGISTRY" && test -n "$CI_REGISTRY_IMAGE" && test -n "$CI_PIPELINE_ID" && test -n "$CI_REGISTRY_USER" && test -n "$CI_REGISTRY_PASSWORD" || { echo "Required GitLab Container Registry variables are unavailable" >&2; exit 1; }
+      docker info >/dev/null
+      DOCKER_CONFIG=$(mktemp -d)
+      export DOCKER_CONFIG
+      trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+      printf '%s' "$CI_REGISTRY_PASSWORD" | docker login "$CI_REGISTRY" --username "$CI_REGISTRY_USER" --password-stdin
+  script:
+    - docker run --rm php:8.4-fpm php -r 'echo gethostbyname("pecl.php.net"), PHP_EOL;'
+    - docker run --rm php:8.4-fpm php -r '$f=fopen("https://pecl.php.net/channel.xml","r"); var_dump($f !== false);'
+    - docker build --target ci -f docker/php/Dockerfile -t "$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID" .
+    - docker build --target prod -f docker/php/Dockerfile -t "$CI_REGISTRY_IMAGE/php-build-check:$CI_PIPELINE_ID" .
+    - docker push "$CI_REGISTRY_IMAGE/ci:$CI_PIPELINE_ID"
+
+# Independent of PHP tooling; failure still blocks production integration/publish.
+minio-images:
+  extends: .pipeline-job
+  stage: build
+  image: docker:latest
+  before_script: *registry-login
+  script:
+    - sh docker/ci/check-minio-images.sh
+
+phpstan:
+  extends: .pipeline-job
+  needs: [build]
+  stage: code-quality
+  script:
+    - cd /var/www/app
+    - composer validate --strict
+    - ./vendor/bin/phpstan analyse app routes config database
+    - |
+      # These helpers live outside the application's default quality paths.
+      for file in "$CI_PROJECT_DIR"/docker/release/*.php "$CI_PROJECT_DIR"/docker/php/scheduler.php; do
+        php -l "$file"
+      done
+
+php-cs-fixer:
+  extends: .pipeline-job
+  needs: [build]
+  stage: code-quality
+  script:
+    - cd /var/www/app
+    - ./vendor/bin/php-cs-fixer fix --dry-run --diff
+
+rector:
+  extends: .pipeline-job
+  needs: [build]
+  stage: code-quality
+  script:
+    - cd /var/www/app
+    - ./vendor/bin/rector process --dry-run
+
+tests:
+  extends: .pipeline-job
+  needs: [build, minio-images]
+  stage: code-quality
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+
+    - name: rabbitmq:3.13-management-alpine
+      alias: rabbitmq
+
+    - name: "$MINIO_CI_IMAGE"
+      alias: minio
+      command:
+        - server
+        - /data
+
+  variables:
+    FF_NETWORK_PER_BUILD: "true"
+    CI_SERVICE_WAIT_TIMEOUT: "120"
+
+    APP_ENV: testing
+
+    DB_CONNECTION: pgsql
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_DATABASE: pizza_app_test
+    DB_USERNAME: pizza_db_user
+    DB_PASSWORD: change_me_db_password
+
+    POSTGRES_DB: pizza_app_test
+    POSTGRES_USER: pizza_db_user
+    POSTGRES_PASSWORD: change_me_db_password
+
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: 5672
+    RABBITMQ_USER: pizza_rabbitmq
+    RABBITMQ_PASSWORD: change_me_rabbitmq_password
+    RABBITMQ_DEFAULT_USER: pizza_rabbitmq
+    RABBITMQ_DEFAULT_PASS: change_me_rabbitmq_password
+    RABBITMQ_VHOST: /
+
+    RABBITMQ_QUEUE: reports.generate
+    RABBITMQ_REPORTS_EXCHANGE: reports
+    RABBITMQ_REPORTS_GENERATE_QUEUE: reports.generate
+    RABBITMQ_REPORTS_GENERATE_ROUTING_KEY: reports.generate
+    RABBITMQ_REPORTS_DLQ_QUEUE: reports.generate.dlq
+    RABBITMQ_REPORTS_DLQ_ROUTING_KEY: reports.generate.dlq
+    RABBITMQ_REPORTS_COMPLETED_QUEUE: reports.completed
+    RABBITMQ_REPORTS_COMPLETED_ROUTING_KEY: reports.completed
+
+    MINIO_ROOT_USER: pizza_minio
+    MINIO_ROOT_PASSWORD: change_me_minio_password
+    AWS_ACCESS_KEY_ID: pizza_minio
+    AWS_SECRET_ACCESS_KEY: change_me_minio_password
+    AWS_DEFAULT_REGION: us-east-1
+    AWS_BUCKET: reports
+    AWS_ENDPOINT: http://minio:9000
+    AWS_USE_PATH_STYLE_ENDPOINT: "true"
+
+  script:
+    - cd /var/www/app
+    - test -e .env || touch .env
+    - |
+      set +x
+      APP_KEY=$(php -r 'echo "base64:".base64_encode(random_bytes(32));')
+      JWT_SECRET=$(php -r 'echo bin2hex(random_bytes(32));')
+      export APP_KEY JWT_SECRET
+    - php "$CI_PROJECT_DIR/docker/ci/wait-services.php"
+    - php artisan migrate --force
+    - php artisan reports:rabbitmq:setup
+    - mkdir -p "$CI_PROJECT_DIR/reports"
+    - php artisan test --log-junit="$CI_PROJECT_DIR/reports/phpunit.xml"
+  artifacts:
+    when: always
+    paths:
+      - reports/phpunit.xml
+    reports:
+      junit: reports/phpunit.xml
+
+frontend:
+  extends: .pipeline-job
+  needs: []
+  stage: code-quality
+  image: node:24-alpine
+  variables:
+    VITE_API_BASE_URL: /api
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - node --test docker/release/published-manifest.test.mjs docker/minio/ci.test.mjs
+    - cd frontend
+    - npm ci --no-audit --no-fund
+    - npm test
+    - npm run build
+
+# Optional, independent diagnostic; protected File Variables require a protected branch.
+diagnose-ssh-key:
+  stage: code-quality
+  image: node:24-alpine
+  needs: []
+  allow_failure: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH'
+      when: manual
+    - when: never
+  before_script:
+    - apk add --no-cache openssh-client
+  script:
+    - node docker/release/ssh-key-diagnostics.mjs
+
+# Daemon-free release gate: fake adapters plus Compose config only.
+release-checks:
+  extends: .pipeline-job
+  needs: []
+  stage: code-quality
+  image: node:24-alpine
+  before_script:
+    - apk add --no-cache util-linux docker-cli-compose openssh-client
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - 'printf "Release checks SHA=%s pipeline=%s job=%s\n" "$CI_COMMIT_SHA" "$CI_PIPELINE_ID" "$CI_JOB_ID"'
+    - node -p 'JSON.stringify({node:process.version,platform:process.platform,arch:process.arch})'
+    - cat /etc/alpine-release
+    - busybox
+    - df -Pk /tmp "$CI_PROJECT_DIR"
+    - flock --version
+    - docker compose version
+    - |
+      for file in docker/release/*.mjs; do
+        node --check "$file"
+      done
+      for file in docker/release/*.sh docker/ci/*.sh docker/php/entrypoint*.sh; do
+        sh -n "$file"
+      done
+    - |
+      node --test --test-concurrency=1 \
+        docker/release/runtime.test.mjs \
+        docker/release/release.test.mjs \
+        docker/release/release-test-diagnostics.test.mjs \
+        docker/release/release-tags.test.mjs \
+        docker/release/deploy.test.mjs \
+        docker/release/bootstrap.test.mjs \
+        docker/release/deploy-ssh.test.mjs \
+        docker/release/backup.test.mjs \
+        docker/release/backup-state.test.mjs \
+        docker/release/coordinator.test.mjs \
+        docker/release/coordinator-backup.test.mjs \
+        docker/release/release-run.test.mjs \
+        docker/release/recovery.test.mjs \
+        docker/release/minio-service.test.mjs
+
+production-config:
+  extends: .pipeline-job
+  needs: []
+  stage: code-quality
+  image: docker:latest
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - |
+      # Public fixtures for config validation only; never read deployment .env.local.
+      export APP_URL=https://pizza.example.test APP_KEY=ci-compose-placeholder JWT_SECRET=ci-compose-placeholder
+      export POSTGRES_DB=pizza_ci POSTGRES_USER=pizza_ci POSTGRES_PASSWORD=ci-only
+      export DB_CONNECTION=pgsql DB_HOST=postgres DB_PORT=5432
+      export DB_DATABASE=pizza_ci DB_USERNAME=pizza_ci DB_PASSWORD=ci-only
+      export REDIS_PASSWORD=ci-only RABBITMQ_USER=pizza_ci RABBITMQ_PASSWORD=ci-only
+      export MINIO_ROOT_USER=pizza_ci MINIO_ROOT_PASSWORD=ci-only MINIO_BUCKET=reports
+      export NGINX_PORT=8080 PRODUCTS_CACHE_TTL=3600 COMPOSE_PROFILES=
+    - docker compose --env-file .env -f docker-compose.yml config --quiet
+    - docker compose --env-file .env --profile frontend -f docker-compose.yml config --quiet
+    - docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+    - docker build --target prod -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID" frontend
+    - docker run --rm --network none --entrypoint nginx "$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID" -t
+
+production-integration:
+  extends: .pipeline-job
+  stage: production-integration
+  image: docker:latest
+  dependencies: []
+  before_script: *registry-login
+  script:
+    - sh "$CI_PROJECT_DIR/docker/ci/production-integration.sh"
+  after_script:
+    - sh "$CI_PROJECT_DIR/docker/ci/cleanup-production-check.sh"
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - reports/production-images.tar.gz
+      - reports/production-images.ids
+      - reports/production-images.sha256
+
+publish-production:
+  extends: .pipeline-job
+  resource_group: application-release-publication
+  stage: publish
+  image: docker:latest
+  dependencies:
+    - production-integration
+  before_script: *registry-login
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - sha256sum -c reports/production-images.sha256
+    - docker load --input reports/production-images.tar.gz
+    - |
+      docker image inspect "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID" "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID" --format '{{.Id}}' > reports/production-images.loaded.ids
+      diff reports/production-images.loaded.ids reports/production-images.ids
+    - sh docker/ci/check-release-tags.sh
+    - docker push "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID"
+    - docker push "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID"
+    - docker image inspect "$CI_REGISTRY_IMAGE/php:$CI_PIPELINE_ID" --format '{"id":{{json .Id}},"digests":{{json .RepoDigests}}}' > reports/published-php.json
+    - docker image inspect "$CI_REGISTRY_IMAGE/nginx:$CI_PIPELINE_ID" --format '{"id":{{json .Id}},"digests":{{json .RepoDigests}}}' > reports/published-nginx.json
+  artifacts:
+    expire_in: 90 days
+    paths:
+      - reports/production-images.ids
+      - reports/published-php.json
+      - reports/published-nginx.json
+
+release-manifest:
+  extends: .pipeline-job
+  stage: release
+  image: node:24-alpine
+  dependencies:
+    - publish-production
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - node docker/release/published-manifest.mjs reports reports/release.json
+    - node docker/release/manifest.mjs validate reports/release.json
+  artifacts:
+    expire_in: 90 days
+    paths:
+      - reports/release.json
+
+# Protect the production environment and v* tags in GitLab before configuring SSH.
+deploy-production:
+  stage: deploy
+  image: node:24-alpine
+  interruptible: false
+  timeout: 1h
+  resource_group: production-deploy
+  environment:
+    name: production
+  dependencies:
+    - release-manifest
+    - publish-production
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG =~ /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ && $CI_COMMIT_REF_PROTECTED == "true"'
+      when: on_success
+    - when: never
+  before_script:
+    - apk add --no-cache openssh-client git
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - node docker/release/deploy-ssh.mjs

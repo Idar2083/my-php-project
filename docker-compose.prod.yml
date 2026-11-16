@@ -1,0 +1,253 @@
+x-app-production-environment: &app-production-environment
+  APP_ENV: production
+  APP_DEBUG: "false"
+  APP_KEY: ${APP_KEY:?Set APP_KEY for production}
+  APP_URL: ${APP_URL:?Set APP_URL for production}
+  LOG_CHANNEL: stderr
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET for production}
+  PRODUCTS_CACHE_TTL: ${PRODUCTS_CACHE_TTL:?Set PRODUCTS_CACHE_TTL for production}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD for production}
+  RABBITMQ_HOST: rabbitmq
+  RABBITMQ_PORT: 5672
+  RABBITMQ_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER for production}
+  RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD for production}
+  RABBITMQ_VHOST: /
+
+  DB_CONNECTION: ${DB_CONNECTION:?Set DB_CONNECTION for production}
+  DB_HOST: ${DB_HOST:?Set DB_HOST for production}
+  DB_PORT: ${DB_PORT:?Set DB_PORT for production}
+  DB_DATABASE: ${DB_DATABASE:?Set DB_DATABASE for production}
+  DB_USERNAME: ${DB_USERNAME:?Set DB_USERNAME for production}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD for production}
+
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER for production}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD for production}
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_BUCKET: ${MINIO_BUCKET:?Set MINIO_BUCKET for production}
+  AWS_ENDPOINT: http://minio:9000
+  AWS_USE_PATH_STYLE_ENDPOINT: "true"
+
+services:
+  php:
+    user: www-data
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      target: prod
+    environment:
+      <<: *app-production-environment
+    restart: unless-stopped
+    volumes: !reset []
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "SCRIPT_NAME=/fpm-ping SCRIPT_FILENAME=/fpm-ping REQUEST_METHOD=GET cgi-fcgi -bind -connect 127.0.0.1:9000 | grep -q pong"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  report-worker:
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(str_replace("\0", " ", file_get_contents("/proc/1/cmdline")) === "php artisan queue:work rabbitmq " ? 0 : 1);'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      target: prod
+    command:
+      - /usr/local/bin/entrypoint.worker.sh
+    environment:
+      <<: *app-production-environment
+    restart: unless-stopped
+    volumes: !reset []
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  outbox-worker:
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(str_replace("\0", " ", file_get_contents("/proc/1/cmdline")) === "php artisan outbox:process --worker " ? 0 : 1);'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      target: prod
+    command:
+      - php
+      - artisan
+      - outbox:process
+      - --worker
+    stop_grace_period: 70s
+    environment:
+      <<: *app-production-environment
+    restart: unless-stopped
+    volumes: !reset []
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  report-scheduler:
+    healthcheck:
+      test:
+        - CMD
+        - php
+        - -r
+        - 'exit(str_replace("\0", " ", file_get_contents("/proc/1/cmdline")) === "php /usr/local/bin/scheduler.php " ? 0 : 1);'
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      target: prod
+    command:
+      - php
+      - /usr/local/bin/scheduler.php
+    stop_grace_period: 70s
+    environment:
+      <<: *app-production-environment
+    restart: unless-stopped
+    volumes: !reset []
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  nginx:
+    # Let Compose name the built image per project, as it does for PHP.
+    image: !reset null
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: prod
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:?Set NGINX_PORT for production}:80"
+    volumes: !reset []
+    depends_on:
+      php:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://127.0.0.1/ && wget --no-verbose --tries=1 --spider http://127.0.0.1/up || exit 1"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB for production}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER for production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD for production}
+      APP_ENV: production
+      APP_DEBUG: "false"
+
+      DB_CONNECTION: ${DB_CONNECTION:?Set DB_CONNECTION for production}
+      DB_HOST: ${DB_HOST:?Set DB_HOST for production}
+      DB_PORT: ${DB_PORT:?Set DB_PORT for production}
+    volumes:
+      - pg_data_prod:/var/lib/postgresql/data
+    ports: !reset []
+
+  redis:
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD for production}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - "${REDIS_PASSWORD:?Set REDIS_PASSWORD for production}"
+    ports: !reset []
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?Set RABBITMQ_USER for production}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set RABBITMQ_PASSWORD for production}
+    volumes:
+      - rabbitmq_data_prod:/var/lib/rabbitmq
+    ports: !reset []
+
+  minio:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER for production}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD for production}
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+    volumes:
+      - minio_data_prod:/data
+    ports: !reset []
+
+  minio-init:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER for production}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD for production}
+      MINIO_BUCKET: ${MINIO_BUCKET:?Set MINIO_BUCKET for production}
+
+volumes:
+  pg_data_prod:
+  rabbitmq_data_prod:
+  minio_data_prod:

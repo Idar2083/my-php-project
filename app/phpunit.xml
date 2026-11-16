@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         colors="true"
+>
+    <testsuites>
+        <testsuite name="Feature">
+            <directory>tests/Feature</directory>
+        </testsuite>
+
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
+        </testsuite>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
+    </testsuites>
+
+    <source>
+        <include>
+            <directory>app</directory>
+        </include>
+    </source>
+
+    <php>
+        <env name="APP_ENV" value="testing" force="true"/>
+        <server name="APP_ENV" value="testing" force="true"/>
+        <env name="APP_MAINTENANCE_DRIVER" value="file"/>
+        <env name="BCRYPT_ROUNDS" value="4"/>
+        <env name="BROADCAST_CONNECTION" value="null"/>
+        <env name="CACHE_STORE" value="array"/>
+
+        <server name="DB_CONNECTION" value="pgsql"/>
+        <server name="DB_HOST" value="postgres"/>
+        <server name="DB_PORT" value="5432"/>
+        <server name="DB_DATABASE" value="pizza_app_test"/>
+        <server name="DB_USERNAME" value="pizza_db_user"/>
+
+        <env name="MAIL_MAILER" value="array"/>
+        <env name="QUEUE_CONNECTION" value="sync" force="true"/>
+        <env name="SESSION_DRIVER" value="array"/>
+        <env name="PULSE_ENABLED" value="false"/>
+        <env name="TELESCOPE_ENABLED" value="false"/>
+        <env name="NIGHTWATCH_ENABLED" value="false"/>
+
+        <env name="AWS_ACCESS_KEY_ID" value="pizza_minio" force="true"/>
+        <env name="AWS_DEFAULT_REGION" value="us-east-1" force="true"/>
+        <env name="AWS_BUCKET" value="reports" force="true"/>
+        <env name="AWS_ENDPOINT" value="http://minio:9000" force="true"/>
+        <env name="AWS_USE_PATH_STYLE_ENDPOINT" value="true" force="true"/>
+    </php>
+</phpunit>
