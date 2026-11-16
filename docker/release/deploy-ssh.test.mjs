@@ -101,6 +101,12 @@ test('delivery requires SSH file variables, validates host keys, pins host check
   const calls = [], fake = (cmd, args, options) => { calls.push({ cmd, args, options });return '' }
   deliver(config, bundle(), fake)
   const ssh = calls.at(-1)
+  const copiedKey = ssh.args[ssh.args.indexOf('-i') + 1]
+  assert.notEqual(copiedKey, key)
+  assert.equal(fs.existsSync(copiedKey), false)
+  assert.deepEqual(ssh.args.slice(0, 2), ['-F', '/dev/null'])
+  for (const option of ['ConnectTimeout=15', 'GlobalKnownHostsFile=/dev/null']) assert.ok(ssh.args.includes(option))
+  assert.doesNotMatch(ssh.args.join(' '), /StrictHostKeyChecking=(?:no|off|accept-new)|UserKnownHostsFile=\/dev\/null/)
   assert.equal(ssh.cmd, 'ssh');assert.ok(ssh.args.includes('StrictHostKeyChecking=yes'))
   assert.ok(ssh.args.includes('BatchMode=yes'));assert.ok(ssh.args.includes('IdentitiesOnly=yes'))
   assert.match(ssh.args.at(-1), /^sh \/srv\/pizza\/deploy-tools\/deploy-server.sh \/srv\/pizza v1.2.3 /)
@@ -111,6 +117,12 @@ test('delivery requires SSH file variables, validates host keys, pins host check
     assert.throws(() => deliver({ ...config, ...patch }, bundle(), fake))
   }
   assert.throws(() => deliver(config, bundle(), () => { throw new Error('delivery interrupted') }))
+  for (const name of ['SSH_PRIVATE_KEY', 'SSH_KNOWN_HOSTS']) {
+    const link = join(path, name + '-link')
+    fs.symlinkSync(config[name], link)
+    assert.throws(() => deliver({ ...config, [name]: link }, bundle(), fake), /-file/)
+    assert.throws(() => deliver({ ...config, [name]: path }, bundle(), fake), /-file/)
+  }
   fs.writeFileSync(hosts, 'malformed')
   assert.throws(() => deliver(config, bundle(), fake))
 }))
@@ -118,12 +130,20 @@ test('real ssh-keygen rejects invalid private key and unmatched or malformed kno
   const key = join(path, 'key'), hosts = join(path, 'hosts')
   const result = spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key])
   assert.equal(result.status, 0)
+  fs.chmodSync(key, 0o644)
   const publicKey = fs.readFileSync(key + '.pub', 'utf8').trim()
   const config = { DEPLOY_HOST: 'vps.example.test', DEPLOY_USER: 'pizza', DEPLOY_PORT: '22', DEPLOY_ROOT: '/srv/pizza', SSH_PRIVATE_KEY: key, SSH_KNOWN_HOSTS: hosts }
   fs.writeFileSync(hosts, 'vps.example.test ' + publicKey + '\n')
   let transferred = false
   deliver(config, bundle(), (command, args) => {
     if (command === 'ssh') { transferred = true;return '' }
+    if (args.includes('-y')) {
+      const copy = args.at(-1)
+      assert.notEqual(copy, key)
+      assert.equal(hash(fs.readFileSync(copy)), hash(fs.readFileSync(key)))
+      assert.equal(fs.statSync(copy).mode & 0o777, 0o600)
+      assert.equal(fs.statSync(join(copy, '..')).mode & 0o777, 0o700)
+    }
     const checked = spawnSync(command, args, { encoding: 'utf8' })
     assert.equal(checked.status, 0)
     return checked.stdout
@@ -154,6 +174,39 @@ test('real ssh-keygen rejects invalid private key and unmatched or malformed kno
   fs.writeFileSync(hosts, 'vps.example.test ' + publicKey + '\n')
   assert.throws(() => deliver(config, bundle()))
 }))
+test('known_hosts matches DNS, IPv4, hashed names and nonstandard ports without contacting a server', () => fixture(path => {
+  const key = join(path, 'key'), hosts = join(path, 'hosts')
+  assert.equal(spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key]).status, 0)
+  const publicKey = fs.readFileSync(key + '.pub', 'utf8').trim()
+  for (const [host, port, entry, hashed, accepted] of [
+    ['vps.example.test', '22', 'vps.example.test', false, true],
+    ['192.0.2.1', '22', '192.0.2.1', false, true],
+    ['vps.example.test', '2222', '[vps.example.test]:2222', false, true],
+    ['vps.example.test', '22', 'vps.example.test', true, true],
+    ['vps.example.test', '2222', '[vps.example.test]:2222', true, true],
+    ['vps.example.test', '22', 'other.example.test', false, false],
+    ['vps.example.test', '2222', 'vps.example.test', false, false],
+    ['vps.example.test', '22', '192.0.2.1', false, false],
+  ]) {
+    fs.writeFileSync(hosts, entry + ' ' + publicKey + '\n')
+    if (hashed) assert.equal(spawnSync('ssh-keygen', ['-H', '-f', hosts]).status, 0)
+    let transferred = false, copiedKey
+    const execute = (command, args) => {
+      if (command === 'ssh') { transferred = true;return '' }
+      if (args.includes('-y')) copiedKey = args.at(-1)
+      const result = spawnSync(command, args, { encoding: 'utf8' })
+      if (result.status !== 0 || result.error) throw { status: result.status, code: result.error?.code }
+      return result.stdout
+    }
+    const action = () => deliver({ DEPLOY_HOST: host, DEPLOY_PORT: port, DEPLOY_USER: 'deploy',
+      DEPLOY_ROOT: '/srv/pizza', SSH_PRIVATE_KEY: key, SSH_KNOWN_HOSTS: hosts }, bundle(), execute)
+    if (accepted) action()
+    else assert.throws(action, /known-hosts-match/)
+    assert.equal(transferred, accepted)
+    assert.equal(fs.existsSync(copiedKey), false)
+  }
+}))
+
 test('server validates before installing/importing; installation is atomic and identical retries preserve files', async () => asyncFixture(async path => {
   const value = bundle(), bytes = JSON.stringify(value)
   let loaded = false
@@ -282,8 +335,9 @@ test('delivery failures identify file, key, host matching and remote command sta
   fs.writeFileSync(key, 'PRIVATE_CANARY');fs.writeFileSync(hosts, 'vps.example.test ssh-ed25519 AAAA\n')
   const config = { DEPLOY_HOST: 'vps.example.test', DEPLOY_USER: 'pizza', DEPLOY_PORT: '22', DEPLOY_ROOT: '/srv/pizza', SSH_PRIVATE_KEY: key, SSH_KNOWN_HOSTS: hosts }
   for (const [index, category] of ['private-key-validation', 'known-hosts-validation', 'known-hosts-match', 'server-command'].entries()) {
-    let call = 0
-    assert.throws(() => deliver(config, bundle(), () => {
+    let call = 0, copiedKey
+    assert.throws(() => deliver(config, bundle(), (command, args) => {
+      if (args.includes('-y')) copiedKey = args.at(-1)
       if (call++ === index) throw { status: 1, stderr: 'PRIVATE_CANARY', message: 'PRIVATE_CANARY' }
     }), error => {
       assert.ok(error.message.includes('[' + category + ']'))
@@ -291,7 +345,9 @@ test('delivery failures identify file, key, host matching and remote command sta
       assert.doesNotMatch(error.message, /PRIVATE_CANARY/)
       return true
     })
+    assert.equal(fs.existsSync(copiedKey), false)
   }
+  assert.throws(() => deliver(config, bundle(), () => { throw { status: null, code: 'ENOENT' } }), /private-key-validation.*system_code=ENOENT/)
   for (const [name, category] of [['SSH_PRIVATE_KEY', 'private-key-file'], ['SSH_KNOWN_HOSTS', 'known-hosts-file']]) {
     assert.throws(() => deliver({ ...config, [name]: join(path, 'missing') }, bundle()), new RegExp(category + '.*system_code=ENOENT'))
   }

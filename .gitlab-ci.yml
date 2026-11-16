@@ -230,6 +230,7 @@ release-checks:
         docker/release/deploy.test.mjs \
         docker/release/bootstrap.test.mjs \
         docker/release/deploy-ssh.test.mjs \
+        docker/release/ssh-key-diagnostics.test.mjs \
         docker/release/backup.test.mjs \
         docker/release/backup-state.test.mjs \
         docker/release/coordinator.test.mjs \
