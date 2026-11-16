@@ -58,9 +58,66 @@ function inspect(path, filesystem, execute) {
   return result
 }
 
+function connectionFailure(result) {
+  if (result.error) return result.error.code === 'ENOENT' ? 'not_found'
+    : result.error.code === 'ETIMEDOUT' ? 'timeout' : 'spawn_failed'
+  if (result.signal) return 'terminated'
+  if (result.status === 0) return null
+  const stderr = String(result.stderr || '')
+  if (/REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed/i.test(stderr)) return 'host_key_error'
+  if (/Permission denied|Authentication failed/i.test(stderr)) return 'authentication_failed'
+  if (/Could not resolve hostname|Name or service not known|Temporary failure in name resolution/i.test(stderr)) return 'dns_error'
+  if (/Connection refused/i.test(stderr)) return 'connection_refused'
+  if (/Connection timed out|Operation timed out/i.test(stderr)) return 'timeout'
+  return 'failed'
+}
+
+function checkConnection(env, key, temporary, filesystem, execute) {
+  const result = { status: 'failed', stage: 'ssh-configuration', reason: 'invalid_configuration' }
+  if (!/^[a-z_][a-z0-9_-]*$/.test(env.DEPLOY_USER || '') || env.DEPLOY_USER === 'root' ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9.-]*$/.test(env.DEPLOY_HOST || '') ||
+      !/^\d{1,5}$/.test(env.DEPLOY_PORT || '') || +env.DEPLOY_PORT < 1 || +env.DEPLOY_PORT > 65535 ||
+      typeof env.SSH_KNOWN_HOSTS !== 'string' || !env.SSH_KNOWN_HOSTS) return result
+  try {
+    result.stage = 'known-hosts-file'
+    if (!filesystem.lstatSync(env.SSH_KNOWN_HOSTS).isFile()) return { ...result, reason: 'not_regular_file' }
+    const hosts = join(temporary, 'known_hosts')
+    filesystem.writeFileSync(hosts, filesystem.readFileSync(env.SSH_KNOWN_HOSTS), { flag: 'wx', mode: 0o600 })
+    result.stage = 'known-hosts-format'
+    const lines = filesystem.readFileSync(hosts, 'utf8').split(/\r?\n/).filter(line => line.trim() && !line.trim().startsWith('#'))
+    if (!lines.length || !lines.every(line => /^\S+ (ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(?:256|384|521)) [A-Za-z0-9+/]+={0,2}(?: .*)?$/.test(line))) {
+      return { ...result, reason: 'invalid_format' }
+    }
+    const host = +env.DEPLOY_PORT === 22 ? env.DEPLOY_HOST : '[' + env.DEPLOY_HOST + ']:' + env.DEPLOY_PORT
+    for (const [stage, args] of [
+      ['known-hosts-validation', ['-l', '-f', hosts]],
+      ['known-hosts-match', ['-F', host, '-f', hosts]],
+    ]) {
+      result.stage = stage
+      const checked = execute('ssh-keygen', args, {
+        stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 65536,
+      })
+      const reason = connectionFailure(checked)
+      if (reason) return { ...result, reason }
+    }
+    result.stage = 'ssh-handshake'
+    const checked = execute('ssh', ['-F', '/dev/null', '-T', '-p', env.DEPLOY_PORT, '-i', key,
+      '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
+      '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'UserKnownHostsFile=' + hosts, '-o', 'ConnectTimeout=15',
+      '-o', 'PasswordAuthentication=no', '-o', 'PreferredAuthentications=publickey',
+      env.DEPLOY_USER + '@' + env.DEPLOY_HOST, 'id -un'], {
+      stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', timeout: 30000, killSignal: 'SIGKILL', maxBuffer: 65536,
+    })
+    const reason = connectionFailure(checked)
+    if (reason) return { ...result, reason }
+    if (String(checked.stdout || '').trim() !== env.DEPLOY_USER) return { ...result, stage: 'remote-user', reason: 'unexpected_user' }
+    return { status: 'ok', stage: 'remote-user', reason: 'ok' }
+  } catch { return { ...result, reason: 'operation_failed' } }
+}
+
 // Only explicit metadata and fixed statuses leave this module. Never log paths,
-// exceptions, file contents or child output. This does not contact any server.
-export function diagnoseKey(path, { filesystem = fs, execute = spawnSync, temporaryRoot = os.tmpdir() } = {}) {
+// exceptions, file contents or child output. Network access requires connection.
+export function diagnoseKey(path, { filesystem = fs, execute = spawnSync, temporaryRoot = os.tmpdir(), connection } = {}) {
   const report = { status: 'failed', source: inspect(path, filesystem, execute), copy: { status: 'skipped' }, cleanup: 'not_needed' }
   if (report.source.status !== 'ok') return report
   let temporary
@@ -72,6 +129,10 @@ export function diagnoseKey(path, { filesystem = fs, execute = spawnSync, tempor
     report.copy = inspect(key, filesystem, execute)
     if (report.copy.status === 'ok' && report.source.sha256 === report.copy.sha256 &&
         report.copy.ssh_keygen === 'ok') report.status = 'ok'
+    if (connection) {
+      report.connection = report.status === 'ok' ? checkConnection(connection, key, temporary, filesystem, execute) : { status: 'skipped' }
+      if (report.connection.status !== 'ok') report.status = 'failed'
+    }
   } catch { report.copy = { status: 'copy_failed' } } finally {
     if (temporary) {
       try {
@@ -85,7 +146,9 @@ export function diagnoseKey(path, { filesystem = fs, execute = spawnSync, tempor
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const report = process.argv.length === 2 ? diagnoseKey(process.env.SSH_PRIVATE_KEY) : { status: 'invalid_arguments' }
+    const connect = process.argv.length === 3 && process.argv[2] === '--connect'
+    const report = process.argv.length === 2 || connect
+      ? diagnoseKey(process.env.SSH_PRIVATE_KEY, connect ? { connection: process.env } : {}) : { status: 'invalid_arguments' }
     process.stdout.write(JSON.stringify(report) + '\n')
     process.exitCode = report.status === 'ok' ? 0 : 1
   } catch {

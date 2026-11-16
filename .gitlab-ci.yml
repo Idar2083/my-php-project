@@ -182,20 +182,21 @@ frontend:
     - npm test
     - npm run build
 
-# Optional, independent diagnostic; protected File Variables require a protected branch.
+# Optional SSH handshake; only protected main can access production File Variables.
 diagnose-ssh-key:
   stage: code-quality
   image: node:24-alpine
   needs: []
   allow_failure: true
+  timeout: 3m
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
       when: manual
     - when: never
   before_script:
     - apk add --no-cache openssh-client
   script:
-    - node docker/release/ssh-key-diagnostics.mjs
+    - node docker/release/ssh-key-diagnostics.mjs --connect
 
 # Daemon-free release gate: fake adapters plus Compose config only.
 release-checks:
