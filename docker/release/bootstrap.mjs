@@ -100,6 +100,12 @@ export function bootstrapModel(configuration, driver, operation) {
 export function bootstrapRelease(directory, manifest, bundle, runtime, backupRoot, driver) {
   assertOperationLock(directory)
   privateDirectory(directory);privateDirectory(backupRoot)
+  // Retain readPrivateFile's privacy policy and require owner-read for Compose,
+  // without reading secrets or depending on deploy-bundle.mjs (not shipped).
+  try {
+    const stat = fs.lstatSync(runtime)
+    ensure(stat.isFile() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0 && (stat.mode & 0o400) !== 0)
+  } catch { throw new Error('BOOTSTRAP_RUNTIME_FILE_UNSAFE') }
   const project = driver.backup.config.project
   const initial = initialState(project)
   const configuration = driver.check(initial, manifest, bundle, runtime)
@@ -160,8 +166,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const manifest = validateManifest(readJson(manifestPath))
     bootstrapRelease(resolve(directory), manifest, resolve(bundle), resolve(runtime), resolve(backupRoot), new DockerCoordinator(settings))
     console.log(JSON.stringify({ event: 'release_succeeded', release_id: identity(manifest) }))
-  } catch {
-    process.stderr.write('Release bootstrap failed: verify configuration, state, preparation journal and service status.\n')
+  } catch (error) {
+    process.stderr.write(error.message === 'BOOTSTRAP_RUNTIME_FILE_UNSAFE'
+      ? 'Release bootstrap failed: runtime file must be a regular file owned by the current user with owner-read permission and no group or other permissions.\n'
+      : 'Release bootstrap failed: verify configuration, state, preparation journal and service status.\n')
     process.exitCode = 1
   }
 }
