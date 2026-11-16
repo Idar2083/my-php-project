@@ -30,6 +30,145 @@ function assertSafe(report, original) {
   assert.equal(output.includes(original.toString('utf8')), false)
 }
 
+function connectionFixture(run) {
+  return fixture(context => {
+    const hosts = join(context.directory, 'KNOWN_HOSTS_PATH_CANARY')
+    fs.writeFileSync(hosts, 'vps.example.test ' + fs.readFileSync(context.key + '.pub', 'utf8'))
+    const connection = { SSH_KNOWN_HOSTS: hosts, DEPLOY_HOST: 'vps.example.test', DEPLOY_PORT: '22', DEPLOY_USER: 'ci_probe' }
+    return run({ ...context, hosts, connection, options: { ...context.options, connection } })
+  })
+}
+
+test('SSH handshake uses byte-identical private copies, strict options and only id -un', () => connectionFixture(({ directory, key, hosts, original, options }) => {
+  const knownHosts = fs.readFileSync(hosts)
+  fs.chmodSync(key, 0o644)
+  let called = false
+  const report = diagnoseKey(key, { ...options, execute(command, args, settings) {
+    if (command !== 'ssh') return spawnSync(command, args, settings)
+    called = true
+    const copiedKey = args[args.indexOf('-i') + 1]
+    const copiedHosts = args.find(value => value.startsWith('UserKnownHostsFile=')).slice('UserKnownHostsFile='.length)
+    assert.notEqual(copiedKey, key)
+    assert.notEqual(copiedHosts, hosts)
+    assert.deepEqual(fs.readFileSync(copiedKey), original)
+    assert.deepEqual(fs.readFileSync(copiedHosts), knownHosts)
+    for (const path of [copiedKey, copiedHosts]) assert.equal(fs.statSync(path).mode & 0o777, 0o600)
+    assert.equal(fs.statSync(join(copiedKey, '..')).mode & 0o777, 0o700)
+    assert.deepEqual(args, ['-F', '/dev/null', '-T', '-p', '22', '-i', copiedKey,
+      '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes',
+      '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'UserKnownHostsFile=' + copiedHosts, '-o', 'ConnectTimeout=15',
+      '-o', 'PasswordAuthentication=no', '-o', 'PreferredAuthentications=publickey',
+      'ci_probe@vps.example.test', 'id -un'])
+    assert.deepEqual(settings.stdio, ['ignore', 'pipe', 'pipe'])
+    assert.equal(settings.timeout, 30000)
+    assert.equal(settings.killSignal, 'SIGKILL')
+    assert.equal(settings.shell, undefined)
+    return { status: 0, stdout: 'ci_probe\n', stderr: 'SECRET_ERROR_CANARY' }
+  } })
+  assert.equal(called, true)
+  assert.equal(report.status, 'ok')
+  assert.equal(report.source.ssh_keygen, 'failed')
+  assert.equal(report.copy.ssh_keygen, 'ok')
+  assert.deepEqual(report.connection, { status: 'ok', stage: 'remote-user', reason: 'ok' })
+  assert.equal(report.cleanup, 'removed')
+  assert.deepEqual(fs.readFileSync(hosts), knownHosts)
+  assertSafe(report, original)
+  assertClean(directory)
+}))
+
+for (const [name, outcome, stage, reason] of [
+  ['wrong user', { status: 0, stdout: 'SECRET_ERROR_CANARY\n' }, 'remote-user', 'unexpected_user'],
+  ['authentication', { status: 255, stderr: 'Permission denied (publickey). SECRET_ERROR_CANARY' }, 'ssh-handshake', 'authentication_failed'],
+  ['host mismatch', { status: 255, stderr: 'REMOTE HOST IDENTIFICATION HAS CHANGED! SECRET_ERROR_CANARY' }, 'ssh-handshake', 'host_key_error'],
+  ['unknown host key', { status: 255, stderr: 'Host key verification failed. SECRET_ERROR_CANARY' }, 'ssh-handshake', 'host_key_error'],
+  ['timeout', { error: { code: 'ETIMEDOUT', message: 'SECRET_ERROR_CANARY' }, signal: 'SIGKILL' }, 'ssh-handshake', 'timeout'],
+  ['DNS', { status: 255, stderr: 'Could not resolve hostname SECRET_ERROR_CANARY' }, 'ssh-handshake', 'dns_error'],
+  ['refused', { status: 255, stderr: 'Connection refused SECRET_ERROR_CANARY' }, 'ssh-handshake', 'connection_refused'],
+  ['missing SSH', { error: { code: 'ENOENT' } }, 'ssh-handshake', 'not_found'],
+  ['signal', { status: null, signal: 'SIGTERM' }, 'ssh-handshake', 'terminated'],
+  ['arbitrary stderr', { status: 255, stderr: 'SECRET_ERROR_CANARY' }, 'ssh-handshake', 'failed'],
+]) {
+  test('SSH ' + name + ' is safely reported and temporary files are removed', () => connectionFixture(({ directory, key, original, options }) => {
+    const report = diagnoseKey(key, { ...options, execute: (command, args, settings) => command === 'ssh' ? outcome : spawnSync(command, args, settings) })
+    assert.equal(report.status, 'failed')
+    assert.deepEqual(report.connection, { status: 'failed', stage, reason })
+    assert.equal(report.cleanup, 'removed')
+    assertSafe(report, original)
+    assertClean(directory)
+  }))
+}
+
+test('missing or unsafe connection variables prevent SSH without disclosing values', () => connectionFixture(({ directory, key, original, connection, options }) => {
+  for (const patch of [
+    ...Object.keys(connection).map(name => ({ [name]: '' })),
+    { DEPLOY_HOST: '-oProxyCommand=SECRET_ERROR_CANARY' }, { DEPLOY_PORT: '0' }, { DEPLOY_PORT: '65536' },
+    { DEPLOY_USER: 'root' }, { DEPLOY_USER: 'ci;SECRET_ERROR_CANARY' },
+  ]) {
+    const report = diagnoseKey(key, { ...options, connection: { ...connection, ...patch }, execute(command, args, settings) {
+      assert.equal(command, 'ssh-keygen')
+      assert.ok(args.includes('-y'))
+      return spawnSync(command, args, settings)
+    } })
+    assert.deepEqual(report.connection, { status: 'failed', stage: 'ssh-configuration', reason: 'invalid_configuration' })
+    assert.equal(report.status, 'failed')
+    assert.equal(report.cleanup, 'removed')
+    assertSafe(report, original)
+    assertClean(directory)
+  }
+  const missingKey = diagnoseKey(undefined, options)
+  assert.equal(missingKey.source.status, 'missing_path')
+  assert.equal(missingKey.status, 'failed')
+}))
+
+test('known_hosts failures stop before SSH and clean copies', () => connectionFixture(({ directory, key, hosts, original, options }) => {
+  for (const [content, stage, reason] of [
+    ['malformed SECRET_ERROR_CANARY', 'known-hosts-format', 'invalid_format'],
+    ['vps.example.test ssh-ed25519 AAAA\n', 'known-hosts-validation', 'failed'],
+    ['other.example.test ' + fs.readFileSync(key + '.pub', 'utf8'), 'known-hosts-match', 'failed'],
+  ]) {
+    fs.writeFileSync(hosts, content)
+    const report = diagnoseKey(key, { ...options, execute(command, args, settings) {
+      assert.equal(command, 'ssh-keygen')
+      return spawnSync(command, args, settings)
+    } })
+    assert.deepEqual(report.connection, { status: 'failed', stage, reason })
+    assert.equal(report.status, 'failed')
+    assert.equal(report.cleanup, 'removed')
+    assertSafe(report, original)
+    assertClean(directory)
+  }
+}))
+
+test('copy and process exceptions are sanitized and cleanup remains mandatory for connectivity', () => connectionFixture(({ directory, key, hosts, original, options }) => {
+  for (const target of ['key', 'known_hosts']) {
+    const report = diagnoseKey(key, { ...options, filesystem: { ...fs, writeFileSync(path, bytes, settings) {
+      fs.writeFileSync(path, bytes, settings)
+      if (path.endsWith('/' + target)) throw new Error('SECRET_ERROR_CANARY')
+    } } })
+    assert.equal(report.status, 'failed')
+    if (target === 'key') assert.equal(report.copy.status, 'copy_failed')
+    else assert.deepEqual(report.connection, { status: 'failed', stage: 'known-hosts-file', reason: 'operation_failed' })
+    assert.equal(report.cleanup, 'removed')
+    assertSafe(report, original)
+    assertClean(directory)
+  }
+  for (const cleanupFails of [false, true]) {
+    const report = diagnoseKey(key, { ...options,
+      filesystem: cleanupFails ? { ...fs, rmSync() { throw new Error('SECRET_ERROR_CANARY') } } : fs,
+      execute(command, args, settings) {
+        if (command !== 'ssh') return spawnSync(command, args, settings)
+        if (!cleanupFails) throw new Error('SECRET_ERROR_CANARY')
+        return { status: 0, stdout: 'ci_probe\n' }
+      },
+    })
+    assert.equal(report.status, 'failed')
+    assert.equal(report.cleanup, cleanupFails ? 'failed' : 'removed')
+    assertSafe(report, original)
+    if (!cleanupFails) assertClean(directory)
+  }
+  assert.ok(fs.existsSync(hosts))
+}))
+
 test('valid LF key reports source and byte-identical private copy, discarding ssh-keygen stdout', () => fixture(({ directory, key, original, options }) => {
   const calls = []
   const report = diagnoseKey(key, { ...options, execute(command, args, settings) {
@@ -211,7 +350,24 @@ test('cleanup failure is explicit and fails the report instead of claiming remov
   assertSafe(report, original)
 }))
 
-test('CI diagnostics are optional manual branch jobs with no artifacts or deployment commands', () => {
+test('CLI --connect enables the read-only probe without logging child output', () => connectionFixture(({ directory, key, original, connection }) => {
+  const bin = join(directory, 'bin')
+  fs.mkdirSync(bin)
+  fs.writeFileSync(join(bin, 'ssh'), '#!/bin/sh\nprintf "ci_probe\\n"\nprintf "SECRET_ERROR_CANARY\\n" >&2\n', { mode: 0o700 })
+  const result = spawnSync(process.execPath, [script, '--connect'], {
+    encoding: 'utf8', env: { PATH: bin + ':' + process.env.PATH, SSH_PRIVATE_KEY: key, TMPDIR: directory, ...connection },
+  })
+  assert.equal(result.status, 0)
+  assert.equal(result.stderr, '')
+  const report = JSON.parse(result.stdout)
+  assert.equal(report.connection.status, 'ok')
+  assert.equal(report.cleanup, 'removed')
+  assertSafe(report, original)
+  assert.doesNotMatch(result.stdout, /vps\.example\.test|ci_probe|KNOWN_HOSTS_PATH_CANARY/)
+  assertClean(directory)
+}))
+
+test('CI diagnostics stay manual and connect only on protected main with no artifacts or deployment commands', () => {
   const yaml = fs.readFileSync(new URL('../../.gitlab-ci.yml', import.meta.url), 'utf8')
   assert.match(yaml.split(/^release-checks:\r?$/m)[1]?.split(/^(?=\S)/m)[0] || '', /docker\/release\/ssh-key-diagnostics\.test\.mjs/)
   const job = yaml.split(/^diagnose-ssh-key:\r?$/m)[1]?.split(/^(?=\S)/m)[0]
@@ -220,22 +376,23 @@ test('CI diagnostics are optional manual branch jobs with no artifacts or deploy
   assert.match(job, /image: node:24-alpine/)
   assert.match(job, /needs: \[\]/)
   assert.match(job, /allow_failure: true/)
+  assert.match(job, /timeout: 3m/)
   assert.match(job, /when: manual/)
   assert.match(job, /when: never/)
   assert.match(job, /apk add --no-cache openssh-client/)
-  assert.equal(job.split(/  script:\r?\n/)[1].trim(), '- node docker/release/ssh-key-diagnostics.mjs')
+  assert.equal(job.split(/  script:\r?\n/)[1].trim(), '- node docker/release/ssh-key-diagnostics.mjs --connect')
   assert.doesNotMatch(job, /dependencies:|artifacts:|trigger:|extends:|environment:|variables:|deploy-ssh|deploy-production|docker push|ssh /)
-  assert.equal(job.match(/- if: '([^']+)'/)[1], '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH')
-  const available = env => env.CI_PIPELINE_SOURCE === 'push' && Boolean(env.CI_COMMIT_BRANCH)
+  assert.equal(job.match(/- if: '([^']+)'/)[1], '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"')
+  const available = env => env.CI_PIPELINE_SOURCE === 'push' && env.CI_COMMIT_BRANCH === 'main' && env.CI_COMMIT_REF_PROTECTED === 'true'
   for (const branch of ['main', 'feature/task-12-frontend']) {
     for (const protectedRef of ['true', 'false']) {
-      assert.equal(available({ CI_PIPELINE_SOURCE: 'push', CI_COMMIT_BRANCH: branch, CI_COMMIT_REF_PROTECTED: protectedRef }), true)
+      assert.equal(available({ CI_PIPELINE_SOURCE: 'push', CI_COMMIT_BRANCH: branch, CI_COMMIT_REF_PROTECTED: protectedRef }), branch === 'main' && protectedRef === 'true')
     }
   }
   for (const context of [
-    { CI_PIPELINE_SOURCE: 'push', CI_COMMIT_TAG: 'v1.0.1' },
-    { CI_PIPELINE_SOURCE: 'merge_request_event', CI_COMMIT_BRANCH: 'feature/example' },
-    { CI_PIPELINE_SOURCE: 'web', CI_COMMIT_BRANCH: 'main' },
-    { CI_PIPELINE_SOURCE: 'schedule', CI_COMMIT_BRANCH: 'main' },
+    { CI_PIPELINE_SOURCE: 'push', CI_COMMIT_TAG: 'v1.0.1', CI_COMMIT_REF_PROTECTED: 'true' },
+    { CI_PIPELINE_SOURCE: 'merge_request_event', CI_COMMIT_BRANCH: 'main', CI_COMMIT_REF_PROTECTED: 'true' },
+    { CI_PIPELINE_SOURCE: 'web', CI_COMMIT_BRANCH: 'main', CI_COMMIT_REF_PROTECTED: 'true' },
+    { CI_PIPELINE_SOURCE: 'schedule', CI_COMMIT_BRANCH: 'main', CI_COMMIT_REF_PROTECTED: 'true' },
   ]) assert.equal(available(context), false)
 })

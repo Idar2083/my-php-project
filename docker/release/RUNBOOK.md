@@ -82,6 +82,38 @@ known_hosts должна соответствовать `[host]:port`. Host key 
 ключ не передаётся в argv. Masked/hidden применять там, где GitLab поддерживает
 формат значения; multiline file variable может не поддерживать masking.
 
+### Ручная диагностика SSH из Runner
+
+`diagnose-ssh-key` доступна только вручную в push pipeline защищённой ветки
+`main`. Она остаётся необязательной (`allow_failure: true`), не публикует artifacts
+и не вызывает production deployment. Общий лимит job — 3 минуты.
+
+Job запускает `node docker/release/ssh-key-diagnostics.mjs --connect` и использует
+существующие Protected `SSH_PRIVATE_KEY`, `SSH_KNOWN_HOSTS`, `DEPLOY_HOST`,
+`DEPLOY_PORT`, `DEPLOY_USER`. Обе SSH-переменные должны иметь тип File и scope,
+доступный job без environment (текущий scope — All). Значения не выводятся.
+`DEPLOY_ROOT` для диагностики не требуется.
+
+Сначала скрипт измеряет source и проверяет побайтную копию ключа `0600` в
+временном каталоге `0700`. Ошибка `source.ssh_keygen` сама по себе не блокирует
+проверку: права File Variable могут не подходить OpenSSH. Затем создаётся отдельная
+копия known_hosts, проверяются её формат, ключи и соответствие host/port.
+
+SSH использует `-F /dev/null`, `-T`, `BatchMode=yes`, `IdentitiesOnly=yes`,
+`StrictHostKeyChecking=yes`, `GlobalKnownHostsFile=/dev/null`, отдельный
+`UserKnownHostsFile`, `ConnectTimeout=15`, `PasswordAuthentication=no` и
+`PreferredAuthentications=publickey`. Выполняется только `id -un`; успех требует
+exit code 0 и совпадения ответа с `DEPLOY_USER`. Общий timeout SSH-процесса —
+30 секунд, проверки known_hosts ограничены 10 секундами каждая.
+
+Отчёт сохраняет метаданные ключа и добавляет `connection.status`, `stage`, `reason`.
+Причины DNS, timeout, отказа соединения, аутентификации и host key выдаются
+фиксированными кодами; stdout/stderr процесса, пути и имя удалённого пользователя
+не выводятся. Временный каталог удаляется в `finally`; ошибка очистки делает
+общий статус неуспешным. Команда без `--connect` сохраняет локальную проверку ключа
+без сетевого подключения. Диагностика не передаёт bundle и не вызывает bootstrap,
+миграции, Docker или рестарты сервисов.
+
 Для публикации сохраняются встроенные CI_REGISTRY_* variables. Для **VPS** заранее
 создать отдельный GitLab Deploy Token только с `read_registry`, выполнить login
 от имени deploy-пользователя через `--password-stdin` и защитить Docker config
