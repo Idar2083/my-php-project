@@ -65,7 +65,7 @@ export function deliver(env, bundle, execute = run) {
       const key = join(temporary, 'key'), hosts = join(temporary, 'known_hosts')
       for (const [source, target] of [[env.SSH_PRIVATE_KEY, key], [env.SSH_KNOWN_HOSTS, hosts]]) {
         stage = target === key ? 'private-key-file' : 'known-hosts-file'
-        requireValue(fs.statSync(source).isFile())
+        requireValue(fs.lstatSync(source).isFile())
         fs.writeFileSync(target, fs.readFileSync(source), { flag: 'wx', mode: 0o600 })
       }
       stage = 'known-hosts-format'

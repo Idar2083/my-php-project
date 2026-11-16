@@ -71,7 +71,7 @@ export function diagnoseKey(path, { filesystem = fs, execute = spawnSync, tempor
     filesystem.writeFileSync(key, filesystem.readFileSync(path), { flag: 'wx', mode: 0o600 })
     report.copy = inspect(key, filesystem, execute)
     if (report.copy.status === 'ok' && report.source.sha256 === report.copy.sha256 &&
-        report.source.ssh_keygen === 'ok' && report.copy.ssh_keygen === 'ok') report.status = 'ok'
+        report.copy.ssh_keygen === 'ok') report.status = 'ok'
   } catch { report.copy = { status: 'copy_failed' } } finally {
     if (temporary) {
       try {

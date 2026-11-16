@@ -63,6 +63,34 @@ test('valid LF key reports source and byte-identical private copy, discarding ss
   assertClean(directory)
 }))
 
+test('source permissions rejected by OpenSSH do not fail a byte-identical 0600 copy', () => fixture(({ directory, key, original, options }) => {
+  fs.chmodSync(key, 0o644)
+  const report = diagnoseKey(key, options)
+  assert.equal(fs.statSync(key).mode & 0o777, 0o644)
+  assert.equal(report.source.status, 'ok')
+  assert.equal(report.source.ssh_keygen, 'failed')
+  assert.equal(report.copy.ssh_keygen, 'ok')
+  assert.equal(report.source.sha256, hash(original))
+  assert.equal(report.copy.sha256, report.source.sha256)
+  assert.equal(report.status, 'ok')
+  assert.equal(report.cleanup, 'removed')
+  assertSafe(report, original)
+  assertClean(directory)
+}))
+
+test('a parseable copy with a different hash still fails diagnostics', () => fixture(({ directory, key, original, options }) => {
+  const report = diagnoseKey(key, { ...options, filesystem: { ...fs, writeFileSync(path, bytes, settings) {
+    fs.writeFileSync(path, Buffer.concat([bytes, Buffer.from('\n')]), settings)
+  } } })
+  assert.equal(report.source.ssh_keygen, 'ok')
+  assert.equal(report.copy.ssh_keygen, 'ok')
+  assert.notEqual(report.source.sha256, report.copy.sha256)
+  assert.equal(report.status, 'failed')
+  assert.equal(report.cleanup, 'removed')
+  assertSafe(report, original)
+  assertClean(directory)
+}))
+
 for (const [name, transform, header, footer, trailing] of [
   ['missing final LF', bytes => bytes.subarray(0, -1), true, false, false],
   ['CRLF', bytes => Buffer.from(bytes.toString().replaceAll('\n', '\r\n')), false, false, true],
@@ -185,6 +213,7 @@ test('cleanup failure is explicit and fails the report instead of claiming remov
 
 test('CI diagnostics are optional manual branch jobs with no artifacts or deployment commands', () => {
   const yaml = fs.readFileSync(new URL('../../.gitlab-ci.yml', import.meta.url), 'utf8')
+  assert.match(yaml.split(/^release-checks:\r?$/m)[1]?.split(/^(?=\S)/m)[0] || '', /docker\/release\/ssh-key-diagnostics\.test\.mjs/)
   const job = yaml.split(/^diagnose-ssh-key:\r?$/m)[1]?.split(/^(?=\S)/m)[0]
   assert.ok(job)
   assert.match(job, /stage: code-quality/)
