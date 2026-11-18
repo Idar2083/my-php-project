@@ -104,10 +104,10 @@ export class DockerBackup {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
       }
       ensure(ready, 'RESTORED_MINIO_NOT_READY')
-      const report = JSON.parse(this.run(['run', '--rm', '--pull=never', `--network=container:${container}`, '--read-only',
+      // The host operator reads the private bundle file; the probe keeps the image's user.
+      const report = JSON.parse(this.run(['run', '--rm', '--pull=never', '-i', `--network=container:${container}`, '--read-only',
         '--tmpfs', '/tmp:rw,nosuid,nodev', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--env', 'MINIO_ROOT_USER', '--env', 'MINIO_ROOT_PASSWORD',
-        '--mount', `type=bind,src=${serviceCheck},dst=/minio-service-check.php,readonly`, '--entrypoint', 'php',
-        this.config.utility_image, '/minio-service-check.php', '/var/www/app/vendor/autoload.php'], { environment }))
+        '--entrypoint', 'php', this.config.utility_image, '--', '/var/www/app/vendor/autoload.php'], { input: serviceCheck, environment }))
       ensure(Number.isSafeInteger(report.buckets) && Number.isSafeInteger(report.versions) && Number.isSafeInteger(report.bytes) &&
         report.buckets >= 0 && report.versions >= 0 && report.bytes >= 0 && /^[a-f0-9]{64}$/.test(report.content_sha256))
       return report
