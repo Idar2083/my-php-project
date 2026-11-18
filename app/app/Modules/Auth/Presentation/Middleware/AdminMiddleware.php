@@ -12,7 +12,7 @@ class AdminMiddleware
 {
     public function handle(Request $request, \Closure $next): Response
     {
-        $user = auth('api')->user();
+        $user = $request->user();
 
         if (! $user) {
             return response()->json([

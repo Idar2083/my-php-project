@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 return [
     'auth' => [
+        'session_unavailable' => 'The session is temporarily unavailable.',
         'invalid_credentials' => 'Invalid credentials.',
         'logged_out' => 'Successfully logged out.',
         'self_demotion' => 'Administrators cannot demote themselves.',

@@ -22,17 +22,9 @@ async function submit() {
   try {
     const body = { email: fields.email, password: fields.password }
     if (props.register) body.name = fields.name
-    const result = await api.request(props.register ? '/register' : '/login', { method: 'POST', body, authenticated: false })
-    if (!active) return
-    if (typeof result?.token !== 'string' || !result.token) throw new Error('Не удалось открыть сессию.')
-    fields.password = ''
-    api.setToken(result.token)
-    try {
-      const user = await api.request('/me')
-      if (!user?.id || !['user', 'admin'].includes(user.role)) throw new Error('Не удалось проверить сессию.')
-      if (!active) { api.setToken(null); return }
-      profile = user
-    } catch (failure) { api.setToken(null); throw failure }
+    const user = await api.request(props.register ? '/register' : '/login', { method: 'POST', body, authenticated: false })
+    if (!user?.id || !['user', 'admin'].includes(user.role)) throw new Error('Не удалось проверить сессию.')
+    profile = user
   } catch (failure) { error.value = failure }
   finally { fields.password = ''; busy.value = false; emit('busy', false) }
   if (active && profile) emit('authenticated', profile)
@@ -41,7 +33,7 @@ async function submit() {
 <template>
   <section class="panel narrow">
     <h1>{{ register ? 'Регистрация' : 'Вход' }}</h1>
-    <p>Корзина и заказы доступны после входа. После перезагрузки страницы нужно войти снова.</p>
+    <p>Корзина и заказы доступны после входа.</p>
     <RequestError :error="error" />
     <form @submit.prevent="submit" :aria-busy="busy">
       <fieldset :disabled="busy">

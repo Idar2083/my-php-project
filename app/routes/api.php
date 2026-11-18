@@ -19,11 +19,12 @@ foreach (['id', 'itemId', 'orderId', 'report'] as $parameter) {
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/products/{id}', [ProductController::class, 'show']);
 
+Route::get('/csrf-cookie', [AuthController::class, 'csrfCookie']);
 Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:register');
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
 
 # Admin routes
-Route::middleware(['auth:api', 'admin'])->group(function (): void {
+Route::middleware(['auth.api', 'admin'])->group(function (): void {
     Route::get('/admin/orders', [AdminOrderController::class, 'index']);
     Route::get('/admin/orders/{orderId}', [AdminOrderController::class, 'show']);
 
@@ -45,7 +46,7 @@ Route::middleware(['auth:api', 'admin'])->group(function (): void {
 });
 
 # Authenticated routes
-Route::middleware(['auth:api'])->group(function (): void {
+Route::middleware(['auth.api'])->group(function (): void {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
 

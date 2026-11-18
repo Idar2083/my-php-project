@@ -946,13 +946,26 @@ npm ci
 npm run dev
 ```
 
-`VITE_API_BASE_URL` — публичная переменная, включающая `/api`; секреты в неё
-помещать нельзя. При абсолютном URL другого origin backend должен разрешать
-CORS. После изменения env перезапустите Vite. Для собранного SPA значение
-встраивается при сборке: измените env и повторите `npm run build`.
-`API_PROXY_TARGET` используется только сервером разработки. Сборка в `dist/`
-сама не содержит API-прокси; Docker production обслуживает её через Nginx,
-настроенный выше. При другом способе размещения нужен API-прокси или абсолютный URL.
+`VITE_API_BASE_URL` — публичная переменная с базовым путём API, обычно `/api`.
+Для браузерной авторизации Laravel API должен обслуживаться на том же origin,
+что и SPA. Например, production Nginx раздаёт `dist/` и проксирует `/api` в
+Laravel. Абсолютный URL другого origin поддерживается только для запросов
+публичного каталога при разрешённом CORS. Браузерный вход с таким URL недоступен.
+
+`API_PROXY_TARGET` используется сервером разработки Vite. После его изменения
+перезапустите Vite. Чтобы новое значение `VITE_API_BASE_URL` вошло в `dist/`,
+пересоберите SPA через `npm run build`.
+
+После загрузки SPA восстанавливает профиль через `GET /api/me`.
+`GET /api/csrf-cookie` выдаёт CSRF-cookie для запросов, меняющих состояние.
+Production Compose хранит сессии в PostgreSQL. Идентификатор сессии передаётся
+в host-only cookie с `HttpOnly`, `Secure` и `SameSite=Lax`. Сессия истекает
+после 120 минут бездействия. Sanctum использует публичный host и порт из `APP_URL`.
+При нестандартном локальном порте Vite добавьте его origin в
+`SANCTUM_STATEFUL_DOMAINS` Laravel. API-клиенты продолжат получать и отправлять Bearer JWT.
+
+[Запуск конкурентного теста logout](app/docs/frontend/SHOP-VERIFICATION.md#конкурентный-logout-laravel-session) и
+[проверка авторизации через публичный HTTPS](docker/release/RUNBOOK.md#проверка-браузерной-авторизации-через-публичный-https).
 
 Проверки frontend:
 
