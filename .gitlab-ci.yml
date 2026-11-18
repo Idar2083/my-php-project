@@ -176,7 +176,7 @@ frontend:
     VITE_API_BASE_URL: /api
   script:
     - cd "$CI_PROJECT_DIR"
-    - node --test docker/release/published-manifest.test.mjs docker/minio/ci.test.mjs
+    - node --test docker/release/published-manifest.test.mjs docker/minio/ci.test.mjs frontend/tests-production/start-services.test.js
     - cd frontend
     - npm ci --no-audit --no-fund
     - npm test
