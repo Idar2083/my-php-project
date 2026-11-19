@@ -314,6 +314,35 @@ test('diagnostics expose only fixed categories, process metadata and recognized 
   assert.doesNotMatch(diagnostic({ stderr: secret, code: secret, signal: secret }, 'bundle-build'), /PRIVATE_CANARY/)
   assert.match(diagnostic({ stderr: 'Validated bundle delivered. Manual first bootstrap is required; no production services were started.' }, 'ssh-command'), /Manual first bootstrap is required/)
 })
+test('server CLI and SSH retain only a complete safe image diagnostic and the Docker exit code', () => fixture(path => {
+  const line = 'Production release failed [image-acquisition] stage=nginx-pull image=nginx exit_code=23 reason=registry-access'
+  const value = buildBundle(env, manifest, file => {
+    if (file.endsWith('/coordinator.mjs')) return `export function backupRelease() { throw new Error(${JSON.stringify(line)}) }`
+    if (file.endsWith('/state.mjs')) return 'export function assertOperationLock() {}\nexport function checkCandidate() {}\nexport function readState() { return { current: { pipeline_id: "122" } } }'
+    if (file.endsWith('/backup.mjs')) return 'export const config = value => value'
+    if (file.endsWith('/coordinator-docker.mjs')) return 'export class DockerCoordinator {}'
+    if (file.endsWith('/release-run.mjs')) return 'export function continueRelease() { throw new Error("PRIVATE_CANARY") }'
+    return fs.readFileSync(join(root, file), 'utf8')
+  })
+  for (const [file, contents] of [['state/state.json', '{}'], ['runtime.env', 'PRIVATE_CANARY'], ['backup-settings.json', '{}']]) {
+    fs.writeFileSync(join(path, 'shared', file), contents, { mode: 0o600 })
+  }
+  const bytes = JSON.stringify(value)
+  const result = spawnSync('sh', [join(root, 'docker/release/deploy-server.sh'),
+    path, value.release.tag, value.release.sha, value.release.pipeline, value.release.registry, hash(bytes)],
+  { input: bytes, encoding: 'utf8' })
+  assert.equal(result.status, 1)
+  assert.equal(result.stderr.split('\n')[0], line)
+  const output = diagnostic(result, 'ssh-command')
+  assert.match(output, /server-command.*exit_code=1/)
+  assert.ok(output.includes(line))
+  for (const stderr of [line + ' PRIVATE_CANARY', 'PRIVATE_CANARY ' + line,
+    line.replace('registry-access', 'PRIVATE_CANARY'), line.replace('image=nginx', 'image=php')]) {
+    assert.match(diagnostic({ status: 1, stderr }, 'ssh-command'), /unrecognized output withheld/)
+  }
+  assert.doesNotMatch(output, /PRIVATE_CANARY/)
+}))
+
 test('spawn diagnostics preserve null status, allowed system codes and signals without arbitrary output', () => {
   const secret = 'PRIVATE_CANARY'
   const hidden = { message: secret, stdout: secret, stderr: secret, spawnargs: [secret] }

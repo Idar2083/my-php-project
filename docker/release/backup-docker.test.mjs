@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 import { join } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import test from 'node:test'
-import { DockerBackup } from './backup-docker.mjs'
 import { preflight, createBackup, restoreTest, verifyBackup } from './backup.mjs'
 import { create } from './manifest.mjs'
 import { initialState, begin, advance } from './state.mjs'
@@ -42,6 +42,28 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
     const pgImage=docker('image','inspect','postgres:15-alpine','--format','{{.Id}}')
     const minioImage=docker('image','inspect',process.env.BACKUP_TEST_MINIO_IMAGE || 'pizza-infra/minio-community:RELEASE.2025-10-15T17-29-55Z','--format','{{.Id}}')
     const phpImage=docker('image','inspect',process.env.BACKUP_TEST_PHP_IMAGE || 'pizza-background-check:audit-eb7383641a1a-9e67bdf247c5','--format','{{.Id}}')
+    const bundle = join(root, 'bundle')
+    fs.mkdirSync(bundle, { mode: 0o700 })
+    for (const name of ['backup-docker.mjs', 'backup-format.mjs', 'minio-snapshot.php', 'minio-service-check.php']) {
+      const file = join(bundle, name)
+      fs.writeFileSync(file, fs.readFileSync(new URL(name, import.meta.url)), { mode: 0o600 })
+    }
+    const serviceCheckFile = join(bundle, 'minio-service-check.php')
+    const originalPermissions = fs.statSync(serviceCheckFile)
+    assert.equal(originalPermissions.uid, process.getuid())
+    assert.equal(originalPermissions.gid, process.getgid())
+    assert.equal(originalPermissions.mode & 0o777, 0o600)
+    assert.equal(docker('run', '--rm', '--pull=never', '--network=none', '--entrypoint', 'id', phpImage, '-u'), '33')
+    const unrelatedUid = [1000, 1001, 1002].find(uid => uid !== originalPermissions.uid)
+    for (const uid of [33, unrelatedUid]) {
+      assert.notEqual(uid, originalPermissions.uid)
+      const result = spawnSync('docker', ['run', '--rm', '--pull=never', '--network=none', '--read-only',
+        '--cap-drop=ALL', '--user', `${uid}:${uid}`, '--mount', `type=bind,src=${serviceCheckFile},dst=/minio-service-check.php,readonly`,
+        '--entrypoint', 'php', phpImage, '/minio-service-check.php'], { env, encoding: 'utf8', timeout: 10000 })
+      assert.equal(result.status, 1)
+      assert.match(result.stdout + result.stderr, /Could not open input file/)
+    }
+    const { DockerBackup } = await import(pathToFileURL(join(bundle, 'backup-docker.mjs')).href)
     const pg=createContainer('postgres',pgImage,['--read-only','--tmpfs','/var/lib/postgresql/data:rw','--tmpfs','/var/run/postgresql:rw','--tmpfs','/tmp:rw','--env','POSTGRES_HOST_AUTH_METHOD=trust','--env','POSTGRES_USER=postgres','--env','POSTGRES_DB=postgres'])
     docker('start',pg); await ready(['exec',pg,'sh','-ec','test "$(cat /proc/1/comm)" = postgres && pg_isready -U postgres'])
     docker('exec',pg,'psql','-U','postgres','-c',"CREATE TABLE backup_fixture(id int primary key, value text); INSERT INTO backup_fixture VALUES(1, 'isolated-value');")
@@ -153,11 +175,15 @@ test('real custom dump/globals and offline MinIO restore use only isolated resou
     assert.throws(()=>restoreTest(backup,driver))
     assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
     driver.run=(args,options)=>{
-      if(args.includes('/minio-service-check.php')) throw new Error('controlled S3 read failure')
+      if (options?.input === serviceCheckFile) {
+        return originalRun(args, { ...options, environment: { ...options.environment, MINIO_ROOT_PASSWORD: 'fixture-invalid-credential' } })
+      }
       return originalRun(args,options)
     }
-    assert.throws(()=>restoreTest(backup,driver))
-    assert.equal(docker('ps','-aq','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
+    assert.throws(() => restoreTest(backup, driver), { message: 'DOCKER_BACKUP_COMMAND_FAILED' })
+    const finalPermissions = fs.statSync(serviceCheckFile)
+    for (const key of ['uid', 'gid', 'mode']) assert.equal(finalPermissions[key], originalPermissions[key])
+    assert.equal(docker('ps', '-aq', '--filter', 'label=pizza.backup-test-scope=' + owner), '')
     assert.equal(docker('volume','ls','-q','--filter','label=pizza.backup-test','--filter','label=pizza.backup-test-scope='+owner),'')
     driver.run=originalRun
     // Exercise the combined coordinator with real dump/snapshot/restore, on the

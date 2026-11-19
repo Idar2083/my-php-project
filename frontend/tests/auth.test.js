@@ -15,17 +15,16 @@ it('validates registration password complexity before a request', async () => {
   expect(wrapper.get('[role=alert]').text()).toContain('минимум 8 символов')
 })
 
-it('registers using exactly name/email/password and verifies the current user', async () => {
+it('registers using exactly name/email/password and uses the session profile', async () => {
   const user = { id: 3, name: 'Buyer', role: 'user' }
-  const request = vi.fn().mockResolvedValueOnce({ token: 'test-jwt' }).mockResolvedValueOnce(user)
-  const setToken = vi.fn()
-  render(true, { request, setToken })
+  const request = vi.fn().mockResolvedValueOnce(user)
+  render(true, { request })
   await wrapper.get('[name=name]').setValue('Buyer')
   await wrapper.get('[name=email]').setValue('buyer@example.test')
   await wrapper.get('[name=password]').setValue('StrongPassword!123')
   await wrapper.get('form').trigger('submit'); await flushPromises()
   expect(request).toHaveBeenNthCalledWith(1, '/register', { method: 'POST', authenticated: false, body: { name: 'Buyer', email: 'buyer@example.test', password: 'StrongPassword!123' } })
-  expect(request).toHaveBeenNthCalledWith(2, '/me')
+  expect(request).toHaveBeenCalledOnce()
   expect(wrapper.emitted('authenticated')[0][0]).toEqual(user)
   expect(wrapper.get('[name=password]').element.value).toBe('')
 })
@@ -40,16 +39,14 @@ it.each([401, 422, 429, 500])('shows a safe login error %s and clears the passwo
   expect(wrapper.get('[name=password]').element.value).toBe('')
 })
 
-it('keeps duplicate sign-in submissions blocked until /me finishes and clears an unverified token', async () => {
+it('keeps duplicate sign-in submissions blocked until the server returns the session profile', async () => {
   let reject
-  const request = vi.fn().mockResolvedValueOnce({ token: 'test-jwt' }).mockImplementationOnce(() => new Promise((resolve, fail) => { reject = fail }))
-  const setToken = vi.fn()
-  render(false, { request, setToken })
+  const request = vi.fn().mockImplementationOnce(() => new Promise((resolve, fail) => { reject = fail }))
+  render(false, { request })
   await wrapper.get('form').trigger('submit'); await flushPromises()
   await wrapper.get('form').trigger('submit')
-  expect(request).toHaveBeenCalledTimes(2)
+  expect(request).toHaveBeenCalledOnce()
   expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
   reject(new ApiError(401)); await flushPromises()
-  expect(setToken).toHaveBeenLastCalledWith(null)
   expect(wrapper.emitted('authenticated')).toBeUndefined()
 })

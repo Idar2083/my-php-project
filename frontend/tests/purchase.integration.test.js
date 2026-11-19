@@ -10,16 +10,31 @@ const enabled = !!process.env.UI_API_URL && !!process.env.UI_TEST_ADMIN_PASSWORD
 it.runIf(enabled)('purchases through the real API and processes the same order as an administrator', async () => {
   const origin = new URL(process.env.UI_API_URL)
   expect(origin.hostname).toBe('127.0.0.1')
-  vi.stubEnv('VITE_API_BASE_URL', `${origin.origin}/api`)
+  vi.stubEnv('VITE_API_BASE_URL', '/api')
   const nativeFetch = globalThis.fetch
-  let buyerToken
+  const cookies = new Map()
+  const responses = []
+  function browserHeaders() {
+    return { Accept: 'application/json', Origin: origin.origin, 'X-Pizza-Client': 'spa', Cookie: [...cookies.values()].join('; ') }
+  }
   vi.stubGlobal('fetch', async (url, options) => {
-    const response = await nativeFetch(url, options)
-    if (String(url).endsWith('/register') && response.ok) buyerToken = (await response.clone().json()).token
+    const headers = options?.credentials === 'same-origin'
+      ? { ...options.headers, ...browserHeaders() }
+      : options?.headers
+    const response = await nativeFetch(new URL(url, origin), { ...options, headers })
+    responses.push(`${options?.method || 'GET'} ${new URL(url, origin).pathname} ${response.status}`)
+    if (options?.credentials === 'same-origin') {
+      for (const cookie of response.headers.getSetCookie()) {
+        const pair = cookie.split(';', 1)[0]
+        const name = pair.split('=', 1)[0]
+        cookies.set(name, pair)
+        if (name === 'XSRF-TOKEN') document.cookie = pair
+      }
+    }
     return response
   })
   wrapper = mount(App)
-  const wait = async predicate => vi.waitFor(() => expect(predicate()).toBeTruthy(), { timeout: 15000, interval: 30 })
+  const wait = async predicate => vi.waitFor(() => expect(predicate(), `${predicate}\n${responses.join('\n')}`).toBeTruthy(), { timeout: 15000, interval: 30 })
   const text = () => wrapper.text()
   async function click(label) {
     await wait(() => wrapper.findAll('button').some(button => button.text() === label && button.attributes('disabled') === undefined))
@@ -34,7 +49,18 @@ it.runIf(enabled)('purchases through the real API and processes the same order a
   await wrapper.get('[name=password]').setValue(password)
   await wrapper.get('form').trigger('submit')
   await wait(() => text().includes('Вы вошли в аккаунт'))
-  expect((await nativeFetch(`${origin.origin}/api/admin/orders`, { headers: { Accept: 'application/json', Authorization: `Bearer ${buyerToken}` } })).status).toBe(403)
+  expect((await nativeFetch(`${origin.origin}/api/admin/orders`, { headers: browserHeaders() })).status).toBe(403)
+  wrapper.unmount()
+  wrapper = mount(App)
+  await wait(() => text().includes('Real API buyer'))
+  const secondTab = mount(App)
+  try {
+    await wait(() => secondTab.text().includes('Real API buyer'))
+  } finally {
+    secondTab.unmount()
+  }
+  expect((await nativeFetch(`${origin.origin}/api/me`, { headers: browserHeaders() })).status).toBe(200)
+  const oldHeaders = browserHeaders()
   await wait(() => wrapper.findAll('article').length === 2)
   await wrapper.findAll('article').find(card => card.text().includes('UI integration pizza')).get('button').trigger('click')
   await wait(() => text().includes('Товар добавлен'))
@@ -56,7 +82,7 @@ it.runIf(enabled)('purchases through the real API and processes the same order a
   await wait(() => text().includes('Корзина пуста'))
   await click('Выйти')
   await wait(() => text().includes('Вы вышли из аккаунта'))
-  expect((await nativeFetch(`${origin.origin}/api/me`, { headers: { Accept: 'application/json', Authorization: `Bearer ${buyerToken}` } })).status).toBe(401)
+  expect((await nativeFetch(`${origin.origin}/api/me`, { headers: oldHeaders })).status).toBe(401)
   await click('Вход')
   await wrapper.get('[name=email]').setValue('ui-admin@example.test')
   await wrapper.get('[name=password]').setValue(process.env.UI_TEST_ADMIN_PASSWORD)

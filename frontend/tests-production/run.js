@@ -6,6 +6,7 @@ import { hostname, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout } from 'node:timers/promises'
+import { startServices } from './start-services.js'
 
 const frontend = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const root = resolve(frontend, '..')
@@ -23,6 +24,7 @@ if (exportImages) {
 }
 let networkAttached = false
 let ownsProject = false
+let failed = false
 const directory = mkdtempSync(join(tmpdir(), `${project}-`))
 const password = randomBytes(24).toString('hex')
 const values = {
@@ -73,12 +75,14 @@ const composeArgs = [
   '--env-file', join(root, '.env'), '--env-file', envFile,
   '-f', join(root, 'docker-compose.yml'), '-f', join(root, 'docker-compose.prod.yml'), '-f', override,
 ]
-function run(command, args, { capture = false, env = environment } = {}) {
+function run(command, args, { capture = false, env = environment, timeout = 1200000 } = {}) {
   const result = spawnSync(command, args, {
-    cwd: root, env, encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit', timeout: 1200000,
+    cwd: root, env, encoding: 'utf8', stdio: capture ? 'pipe' : 'inherit', timeout,
   })
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`${command} failed (exit ${result.status})`)
+  if (result.status !== 0) {
+    throw Object.assign(new Error(`${command} failed (exit ${result.status})`), { exitCode: result.status })
+  }
   return result.stdout?.trim()
 }
 const compose = (...args) => run('docker', [...composeArgs, ...args])
@@ -125,7 +129,11 @@ try {
     assert.ok(missing.stderr.includes(key))
   }
   compose('build', 'php', 'nginx')
-  compose('up', '-d', '--no-build', '--wait', '--wait-timeout', '180', 'php', 'nginx')
+  startServices(
+    () => compose('up', '-d', '--no-build', '--wait', '--wait-timeout', '180', 'php', 'nginx'),
+    (...args) => run('docker', [...composeArgs, ...args], { capture: true, timeout: 10000 }),
+    (...args) => run('docker', args, { capture: true, timeout: 10000 }),
+  )
   const nginxContainer = capture('ps', '--quiet', 'nginx')
   for (const name of Object.keys(fixtures)) {
     run('docker', ['cp', join(directory, name), `${nginxContainer}:/usr/share/nginx/html/assets/${name}`])
@@ -206,15 +214,28 @@ try {
     run('gzip', ['-f', archive])
     console.log('Exported the tested production images without publishing them')
   }
+} catch (error) {
+  failed = true
+  if (!Number.isInteger(error?.exitCode)) throw error
+  console.error(error.message)
+  process.exitCode = error.exitCode
 } finally {
   // Only resources belonging to our generated project are removed, including its disposable DB.
+  const cleanup = action => {
+    try {
+      action()
+    } catch (error) {
+      if (!failed) throw error
+      console.error('Production integration cleanup failed after the original failure.')
+    }
+  }
   try {
-    if (networkAttached) run('docker', ['network', 'disconnect', `${project}_default`, hostname()])
+    if (networkAttached) cleanup(() => run('docker', ['network', 'disconnect', `${project}_default`, hostname()]))
   } finally {
     try {
-      if (ownsProject) compose('down', '--volumes', '--remove-orphans')
+      if (ownsProject) cleanup(() => compose('down', '--volumes', '--remove-orphans'))
     } finally {
-      rmSync(directory, { recursive: true })
+      cleanup(() => rmSync(directory, { recursive: true }))
     }
   }
 }

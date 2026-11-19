@@ -9,6 +9,7 @@ fail() {
 case "${1-}" in
     status) [ "$#" -eq 2 ] || fail ;;
     check) [ "$#" -eq 5 ] || fail ;;
+    cancel-prepared) [ "$#" -eq 4 ] || fail ;;
     bootstrap|prepare-backup|backup|continue|rollback) [ "$#" -eq 7 ] || fail ;;
     recover) [ "$#" -eq 9 ] || [ "$#" -eq 10 ] || fail ;;
     accept-backup|mark-migrating) [ "$#" -eq 5 ] || fail ;;

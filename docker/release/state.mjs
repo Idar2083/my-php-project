@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import { validate as validateManifest } from './manifest.mjs'
-import { verifyFiles, verifyPreflight } from './backup-format.mjs'
+import { readJson, savePlan, verifyFiles, verifyPreflight } from './backup-format.mjs'
 
 const phases = ['prepared', 'images_ready', 'quiescing', 'quiesced', 'backup_ready', 'migrating', 'migrated', 'starting', 'verified', 'committed']
 const phpServices = ['php', 'report-worker', 'outbox-worker', 'report-scheduler']
@@ -112,6 +112,142 @@ export function assertNoRecovery(directory, manifest) {
   requireCondition(fs.lstatSync(join(directory, `recovery-${identity(manifest)}`), { throwIfNoEntry: false }) === undefined)
 }
 
+function preparedCancellation(state) {
+  validateState(state)
+  requireCondition(state.current && state.operation?.phase === 'prepared')
+  const next = validateState({ ...state, revision: state.revision + 1, operation: null })
+  return { next, receipt: {
+    event: 'prepared_cancelled', operation_id: identity(state.operation.manifest),
+    revision: state.revision, completed_state_sha256: stateChecksum(next),
+  } }
+}
+
+function stateChecksum(state) {
+  return createHash('sha256').update(JSON.stringify(state)).digest('hex')
+}
+
+const operationIdPattern = /^[a-f0-9]{64}$/
+
+function readCancellation(path, id) {
+  const receipt = readJson(path)
+  fields(receipt, ['event', 'operation_id', 'revision', 'completed_state_sha256'])
+  requireCondition(receipt.event === 'prepared_cancelled' && receipt.operation_id === id &&
+    Number.isSafeInteger(receipt.revision) && receipt.revision > 0 &&
+    typeof receipt.completed_state_sha256 === 'string' && operationIdPattern.test(receipt.completed_state_sha256))
+  return receipt
+}
+
+function checkJournal(path, kind, id, revision, activeId, currentId, state) {
+  const stat = fs.lstatSync(path)
+  requireCondition(id !== activeId)
+  if (kind === 'quiesce') {
+    const plan = readJson(path)
+    requireCondition(plan.operation_id === id && plan.state_revision === revision && plan.project === state.project)
+    return
+  }
+  if (kind === 'recovery' && stat.isFile()) {
+    readCancellation(path, id)
+    return
+  }
+
+  requireCondition(stat.isDirectory())
+  const planPath = join(path, 'plan.json')
+  const plan = fs.lstatSync(planPath, { throwIfNoEntry: false }) && readJson(planPath)
+  const rollbackPath = join(path, 'rollback-succeeded.json')
+  const rollback = kind === 'recovery' && fs.lstatSync(rollbackPath, { throwIfNoEntry: false }) && readJson(rollbackPath)
+  requireCondition(plan || rollback)
+  const initial = plan && validateState(plan.initial_state)
+  if (plan) {
+    requireCondition(plan.operation_id === id && plan.project === state.project &&
+      initial.project === state.project && identity(initial.operation.manifest) === id)
+    if (kind === 'launch') requireCondition(initial.revision === revision)
+    if (kind === 'recovery') {
+      const backup = validateState(plan.backup_state)
+      requireCondition(backup.project === state.project && backup.operation?.phase === 'backup_ready' &&
+        identity(backup.operation.manifest) === id && isDeepStrictEqual(backup.current, initial.current))
+    }
+  }
+  const restoredId = initial?.current ? identity(initial.current) : rollback?.release_id
+  if (rollback) requireCondition(rollback.event === 'rollback_succeeded' && rollback.failed_release_id === id &&
+    typeof rollback.release_id === 'string' && rollback.release_id.length === 64 &&
+    operationIdPattern.test(rollback.release_id) && rollback.release_id !== id &&
+    Number.isSafeInteger(rollback.revision) && rollback.revision > 0 && rollback.revision < state.revision &&
+    (rollback.revision !== state.revision - 1 || rollback.release_id === currentId))
+
+  const inspect = (directory, restoreRevision, attemptId) => {
+    for (const name of fs.readdirSync(directory)) {
+      const entry = join(directory, name)
+      const entryStat = fs.lstatSync(entry)
+      if (entryStat.isDirectory()) {
+        // Unpublished temporary files cannot authorize a release transition.
+        if (name.startsWith('.quiesce-')) continue
+        if (kind === 'recovery' && directory === path && name === 'restore') {
+          const restore = readJson(join(entry, 'plan.json'))
+          const before = validateState(restore.initial_state)
+          requireCondition(identity(before.operation.manifest) === id && identity(before.current) === restoredId)
+          inspect(entry, before.revision)
+        } else {
+          const attempt = /^launch-([1-9][0-9]*)$/.exec(name)
+          inspect(entry, restoreRevision, attempt && restoreRevision !== undefined
+            ? stateChecksum([id, restoreRevision, Number(attempt[1])]) : undefined)
+        }
+        continue
+      }
+      requireCondition(entryStat.isFile() && name.endsWith('.json'))
+      const record = readJson(entry)
+      requireCondition(record && typeof record === 'object' && !Array.isArray(record))
+      if (Object.hasOwn(record, 'operation_id')) {
+        requireCondition(record.operation_id !== activeId &&
+          record.operation_id === (attemptId && name.startsWith('create-intent-') ? attemptId : id))
+      }
+      if (Object.hasOwn(record, 'failed_release_id')) requireCondition(record.failed_release_id === id)
+      if (Object.hasOwn(record, 'release_id')) {
+        requireCondition(operationIdPattern.test(record.release_id) && record.release_id !== activeId &&
+          record.release_id === (kind === 'launch' ? id : restoredId))
+      }
+    }
+  }
+  inspect(path)
+}
+
+export function cancelPrepared(directory, manifest, revision) {
+  assertOperationLock(directory)
+  const stat = fs.lstatSync(directory)
+  requireCondition(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0)
+  const state = readState(directory)
+  const id = identity(manifest)
+  const receiptPath = join(directory, 'recovery-' + id)
+  const entry = fs.lstatSync(receiptPath, { throwIfNoEntry: false })
+  const receipt = entry?.isFile() ? readCancellation(receiptPath, id) : null
+  requireCondition(Number.isSafeInteger(revision) && revision > 0 && state.current)
+  if (receipt && state.operation === null) {
+    requireCondition(receipt.revision === revision && state.revision === revision + 1 &&
+      receipt.completed_state_sha256 === stateChecksum(state))
+    syncStateDirectory(directory)
+    return state
+  }
+  requireCondition(state.revision === revision && state.operation?.phase === 'prepared')
+  checkCandidate(state, manifest)
+  const activeId = identity(state.operation.manifest)
+  const currentId = identity(state.current)
+  for (const name of fs.readdirSync(directory)) {
+    const kind = /^(quiesce|launch|recovery)-/.exec(name)?.[1]
+    if (!kind) continue
+    const journal = /^(?:quiesce|launch|recovery)-([a-f0-9]{64})(?:-([0-9]+))?(\.json)?$/.exec(name)
+    requireCondition(journal)
+    const [, journalId, revisionText, extension] = journal
+    requireCondition((kind === 'recovery') === (revisionText === undefined) &&
+      (kind === 'quiesce') === (extension === '.json'))
+    if (kind === 'recovery' && journalId === activeId && receipt) continue
+    checkJournal(join(directory, name), kind, journalId, Number(revisionText), activeId, currentId, state)
+  }
+  const cancellation = preparedCancellation(state)
+  if (receipt) requireCondition(isDeepStrictEqual(receipt, cancellation.receipt))
+  else savePlan(receiptPath, directory, cancellation.receipt)
+  persistState(directory, state, cancellation.next, {}, true)
+  return cancellation.next
+}
+
 export function readState(directory) {
   const file = join(directory, 'state.json')
   requireCondition(fs.lstatSync(file).isFile())
@@ -140,7 +276,16 @@ export function assertOperationLock(directory) {
   requireCondition(spawnSync('flock', ['-n', '-x', '9'], { stdio }).status === 0)
 }
 
+function syncStateDirectory(directory) {
+  const fd = fs.openSync(directory, 'r')
+  try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+}
+
 export function persist(directory, expected, next, evidence = {}) {
+  return persistState(directory, expected, next, evidence, false)
+}
+
+function persistState(directory, expected, next, evidence, preparedCancellationChecked) {
   assertOperationLock(directory)
   validateState(next)
   const file = join(directory, 'state.json')
@@ -155,9 +300,25 @@ export function persist(directory, expected, next, evidence = {}) {
     if (isDeepStrictEqual(expected, next)) return
     const recovering = ['rolling_back', 'recovery_required'].includes(next.operation?.phase) ||
       (['rolling_back', 'recovery_required'].includes(expected.operation?.phase) && next.operation === null)
-    const allowed = recovering ? recoveryTransition(expected, next.operation?.phase ?? (expected.operation.phase === 'recovery_required' ? 'recovery_complete' : 'rollback_complete'), next.data) : expected.operation
-      ? advance(expected, expected.operation.manifest, phases[phases.indexOf(expected.operation.phase) + 1])
-      : next.operation ? begin(expected, next.operation.manifest) : expected
+    const cancelling = expected.operation?.phase === 'prepared' && next.operation === null
+    let allowed
+    if (cancelling) {
+      requireCondition(preparedCancellationChecked)
+      const cancellation = preparedCancellation(expected)
+      const receipt = join(directory, 'recovery-' + cancellation.receipt.operation_id)
+      requireCondition(isDeepStrictEqual(readJson(receipt), cancellation.receipt))
+      // A retry may find a receipt linked by a process that died before fsync.
+      syncStateDirectory(directory)
+      allowed = cancellation.next
+    } else if (recovering) {
+      allowed = recoveryTransition(expected, next.operation?.phase ?? (expected.operation.phase === 'recovery_required' ? 'recovery_complete' : 'rollback_complete'), next.data)
+    } else if (expected.operation) {
+      if (expected.operation.phase === 'prepared') assertNoRecovery(directory, expected.operation.manifest)
+      allowed = advance(expected, expected.operation.manifest, phases[phases.indexOf(expected.operation.phase) + 1])
+    } else if (next.operation) {
+      assertNoRecovery(directory, next.operation.manifest)
+      allowed = begin(expected, next.operation.manifest)
+    } else allowed = expected
     if (recovering) {
       requireCondition(evidence.recovery)
       const plan = JSON.parse(fs.readFileSync(evidence.recovery, 'utf8'))
@@ -194,8 +355,7 @@ export function persist(directory, expected, next, evidence = {}) {
     fs.writeFileSync(staged, JSON.stringify(next, null, 2) + '\n', { flag: 'wx', mode: 0o600, flush: true })
     if (expected === null) fs.linkSync(staged, file)
     else fs.renameSync(staged, file)
-    const fd = fs.openSync(directory, 'r')
-    try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+    syncStateDirectory(directory)
   } finally {
     fs.rmSync(temporary, { recursive: true })
   }
@@ -249,15 +409,20 @@ export function checkCompose(state, manifest, bundle, runtime, environment = pro
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const [command, directory, ...args] = process.argv.slice(2)
-    requireCondition(directory && ((command === 'status' && args.length === 0) || (command === 'check' && args.length === 3)))
+    requireCondition(directory && ((command === 'status' && args.length === 0) || (command === 'check' && args.length === 3) ||
+      (command === 'cancel-prepared' && args.length === 2 && /^[1-9][0-9]*$/.test(args[1]))))
     assertOperationLock(directory)
-    const state = readState(directory)
-    if (command === 'check') {
+    if (command === 'cancel-prepared') {
+      const state = cancelPrepared(directory, readJson(args[0]), Number(args[1]))
+      console.log(JSON.stringify({ event: 'prepared_cancelled', revision: state.revision }))
+    } else if (command === 'check') {
+      const state = readState(directory)
       const manifest = validateManifest(JSON.parse(fs.readFileSync(args[0], 'utf8')))
       checkCandidate(state, manifest)
       checkCompose(state, manifest, resolve(args[1]), resolve(args[2]))
       console.log('Release checks passed; no changes performed.')
     } else {
+      const state = readState(directory)
       // Print only fixed labels and validated opaque IDs, never state contents.
       console.log(JSON.stringify({ project: state.project, revision: state.revision,
         current: state.current ? identity(state.current) : null,
@@ -265,7 +430,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         phase: state.operation?.phase ?? 'idle' }))
     }
   } catch {
-    process.stderr.write('Release state check failed; verify arguments, lock, state and configuration.\n')
+    process.stderr.write(process.argv[2] === 'cancel-prepared'
+      ? 'Prepared cancellation stopped; verify lock, state, manifest and journals.\n'
+      : 'Release state check failed; verify arguments, lock, state and configuration.\n')
     process.exitCode = 1
   }
 }

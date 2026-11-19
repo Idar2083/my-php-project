@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 return [
     'auth' => [
+        'session_unavailable' => 'Сессия временно недоступна.',
         'invalid_credentials' => 'Неверные учетные данные.',
         'logged_out' => 'Вы успешно вышли из системы.',
         'self_demotion' => 'Администратор не может понизить собственную роль.',

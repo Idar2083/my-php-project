@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { create } from './manifest.mjs'
-import { advance, begin, checkCandidate, checkCompose, composeProcessEnvironment, identity, initialState, readState, validateState } from './state.mjs'
+import { advance, assertNoRecovery, begin, checkCandidate, checkCompose, composeProcessEnvironment, identity, initialState, readState, validateState } from './state.mjs'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const moduleUrl = new URL('./state.mjs', import.meta.url).href
@@ -29,8 +29,185 @@ function writeFixture(directory, state) {
 function execute(directory, code, additions = {}) {
   return spawnSync('sh', ['-c', 'exec 9<"$TEST_DIR"; exec node --input-type=module -e "$TEST_CODE"'], {
     encoding: 'utf8', env: { PATH: process.env.PATH, TEST_DIR: directory,
-      TEST_CODE: `import {stateEvidence} from ${JSON.stringify(evidenceUrl)}; import fs from 'node:fs'; import {persist,readState,initialState,begin,advance} from ${JSON.stringify(moduleUrl)}; ${code}`, ...additions },
+      TEST_CODE: `import {stateEvidence} from ${JSON.stringify(evidenceUrl)}; import fs from 'node:fs'; import {assertOperationLock,cancelPrepared,persist,readState,initialState,begin,advance} from ${JSON.stringify(moduleUrl)}; ${code}`, ...additions },
   })
+}
+
+function cancellationFixture(run) {
+  const directory = fixture()
+  try {
+    // Reuse the production SHA/pipeline pairs with fixture image digests.
+    const current = create({ ...source, CI_COMMIT_SHA: 'f334f9bf83df78fd24856e11b970e2eb259fa9ff', CI_PIPELINE_ID: '3074763748' })
+    const candidate = create({ ...source, CI_COMMIT_SHA: 'f23042e6eb87ab92c71845af279efdad225a2836', CI_PIPELINE_ID: '3085629041' })
+    const project = 'pizza-production'
+    const failed = identity(second), restored = identity(current)
+    const state = { ...initialState(project), revision: 18, current, previous: first,
+      operation: { manifest: candidate, phase: 'prepared' }, data: { postgres: 'fixture-pg', minio: 'fixture-minio' } }
+    const recovery = 'recovery-' + failed
+    const rollback = join(recovery, 'rollback-succeeded.json')
+    const journals = {
+      [`quiesce-${failed}-12.json`]: { project, operation_id: failed, state_revision: 12 },
+      [`quiesce-${restored}-2.json`]: { project, operation_id: restored, state_revision: 2 },
+      [rollback]: { event: 'rollback_succeeded', project, release_id: restored, failed_release_id: failed, revision: 17 },
+    }
+    fs.mkdirSync(join(directory, recovery))
+    const bytes = Object.fromEntries(Object.entries(journals).map(([name, record]) => [name, JSON.stringify(record) + '\n']))
+    for (const [name, data] of Object.entries(bytes)) fs.writeFileSync(join(directory, name), data)
+    writeFixture(directory, state)
+    const receipt = join(directory, 'recovery-' + identity(candidate))
+    const manifest = join(directory, 'candidate.json')
+    fs.writeFileSync(manifest, JSON.stringify(candidate))
+    const runtime = join(directory, 'runtime.env')
+    fs.writeFileSync(runtime, 'FIXTURE_RUNTIME=unchanged\n', { mode: 0o600 })
+    const bin = join(directory, 'bin')
+    fs.mkdirSync(bin)
+    for (const name of ['node', 'flock', 'dirname']) {
+      const path = name === 'node' ? process.execPath : spawnSync('sh', ['-c', 'command -v "$1"', 'sh', name], { encoding: 'utf8' }).stdout.trim()
+      fs.symlinkSync(path, join(bin, name))
+    }
+    const dockerCalls = join(directory, 'docker-called')
+    fs.writeFileSync(join(bin, 'docker'), '#!/bin/sh\n: > "$TEST_DOCKER_CALLS"\nexit 97\n', { mode: 0o700 })
+    const cancel = (revision = '18') => spawnSync('/bin/sh', [join(root, 'docker/release/release.sh'), 'cancel-prepared', directory, manifest, revision],
+      { encoding: 'utf8', env: { PATH: bin, TEST_DOCKER_CALLS: dockerCalls } })
+    run({ directory, state, candidate, receipt, bytes, rollback, cancel, manifest })
+    assert.equal(fs.existsSync(dockerCalls), false)
+    assert.equal(fs.readFileSync(runtime, 'utf8'), 'FIXTURE_RUNTIME=unchanged\n')
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+}
+
+test('cancel-prepared preserves historical journals and current, then accepts only a new deployment', () => cancellationFixture(fixture => {
+  const { directory, state, candidate, receipt, bytes, cancel, manifest } = fixture
+  const result = cancel()
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), { event: 'prepared_cancelled', revision: 19 })
+  const completed = readState(directory)
+  assert.deepEqual(completed, { ...state, operation: null, revision: 19 })
+  for (const [name, data] of Object.entries(bytes)) assert.equal(fs.readFileSync(join(directory, name), 'utf8'), data)
+  const marker = fs.readFileSync(receipt, 'utf8')
+  assert.equal(cancel().status, 0)
+  assert.equal(cancel('19').status, 1)
+  fs.writeFileSync(manifest, JSON.stringify(second))
+  assert.equal(cancel().status, 1)
+  assert.deepEqual(readState(directory), completed)
+  assert.equal(fs.readFileSync(receipt, 'utf8'), marker)
+  // v1.0.4 uses this same existence check before prepare and continue.
+  assert.throws(() => assertNoRecovery(directory, candidate))
+  assert.equal(execute(directory, `const d=process.env.TEST_DIR,s=readState(d);
+    persist(d,s,begin(s,${JSON.stringify(candidate)}));`).status, 1)
+  assert.deepEqual(readState(directory), completed)
+  const next = create({ ...source, CI_PIPELINE_ID: '3087807305' })
+  assert.doesNotThrow(() => { assertNoRecovery(directory, next); checkCandidate(completed, next) })
+  assert.equal(begin(completed, next).operation.phase, 'prepared')
+}))
+
+for (const scenario of ['no current', 'images_ready phase', 'wrong revision', 'different SHA']) {
+  test(`cancel-prepared rejects ${scenario} without changing state`, () => cancellationFixture(({ directory, state, candidate, receipt, cancel, manifest }) => {
+    const file = join(directory, 'state.json')
+    if (scenario === 'no current') {
+      fs.writeFileSync(file, JSON.stringify({ ...state, current: null, previous: null, data: undefined }))
+    }
+    if (scenario === 'images_ready phase') {
+      fs.writeFileSync(file, JSON.stringify({ ...state, operation: { ...state.operation, phase: 'images_ready' } }))
+    }
+    if (scenario === 'different SHA') {
+      const sha = 'e'.repeat(40)
+      fs.writeFileSync(manifest, JSON.stringify({ ...candidate, git_sha: sha, deployment_config: { version: 1, git_sha: sha } }))
+    }
+    const before = fs.readFileSync(file)
+    assert.equal(cancel(scenario === 'wrong revision' ? '17' : '18').status, 1)
+    assert.deepEqual(fs.readFileSync(file), before)
+    assert.equal(fs.existsSync(receipt), false)
+  }))
+}
+
+test('CLI and exported cancellation cannot bypass a competing lock or a missing FD 9', () => cancellationFixture(({ directory, state, candidate, receipt, manifest }) => {
+  const cli = join(root, 'docker/release/release.sh')
+  const direct = `import {cancelPrepared} from ${JSON.stringify(moduleUrl)};
+    cancelPrepared(${JSON.stringify(directory)}, ${JSON.stringify(candidate)}, 18);`
+  const result = execute(directory, `
+    const d=process.env.TEST_DIR;
+    assertOperationLock(d);
+    const {spawnSync}=await import('node:child_process');
+    const assert=(await import('node:assert/strict')).default;
+    assert.equal(spawnSync('/bin/sh',${JSON.stringify([cli, 'cancel-prepared', directory, manifest, '18'])}).status,1);
+    const args=['--input-type=module','-e',${JSON.stringify(direct)}];
+    assert.equal(spawnSync(process.execPath,args).status,1);
+    assert.equal(spawnSync('/bin/sh',['-c','exec 9<"$1"; shift; exec "$@"','sh',d,process.execPath,...args]).status,1);
+  `)
+  assert.equal(result.status, 0, result.stderr)
+  assert.deepEqual(readState(directory), state)
+  assert.equal(fs.existsSync(receipt), false)
+}))
+
+test('cancel-prepared rejects a manifest with matching SHA and pipeline but different digests', () => cancellationFixture(({ directory, state, candidate, receipt, cancel }) => {
+  const changed = { ...candidate, images: { ...candidate.images,
+    php: `registry.example.test/project/php@sha256:${'e'.repeat(64)}` } }
+  fs.writeFileSync(join(directory, 'candidate.json'), JSON.stringify(changed))
+  assert.equal(cancel().status, 1)
+  assert.deepEqual(readState(directory), state)
+  assert.equal(fs.existsSync(receipt), false)
+}))
+
+for (const failure of ['active quiesce', 'active launch', 'active recovery', 'mismatched ID', 'unreadable journal',
+  'wrong restored release', 'quiesce symlink', 'quiesce directory', 'launch file', 'rollback receipt symlink', 'dangling cancellation symlink']) {
+  test(`cancel-prepared rejects ${failure} without writing a receipt`, () => cancellationFixture(({ directory, state, candidate, receipt, rollback, cancel }) => {
+    const id = identity(candidate)
+    const historical = identity(second)
+    const quiesce = join(directory, `quiesce-${historical}-12.json`)
+    switch (failure) {
+      case 'active quiesce': fs.writeFileSync(join(directory, `quiesce-${id}-19.json`), '{}'); break
+      case 'active launch': fs.mkdirSync(join(directory, `launch-${id}-22`)); break
+      case 'active recovery': fs.mkdirSync(receipt); break
+      case 'mismatched ID': fs.writeFileSync(quiesce, JSON.stringify({ project: state.project, operation_id: id, state_revision: 12 })); break
+      case 'unreadable journal': fs.writeFileSync(quiesce, '{broken'); break
+      case 'quiesce symlink': fs.renameSync(quiesce, quiesce + '.saved'); fs.symlinkSync(quiesce + '.saved', quiesce); break
+      case 'quiesce directory': fs.unlinkSync(quiesce); fs.mkdirSync(quiesce); break
+      case 'launch file': fs.writeFileSync(join(directory, `launch-${historical}-15`), '{}'); break
+      case 'rollback receipt symlink': {
+        const path = join(directory, rollback)
+        fs.renameSync(path, path + '.saved')
+        fs.symlinkSync(path + '.saved', path)
+        break
+      }
+      case 'dangling cancellation symlink': fs.symlinkSync(join(directory, 'missing'), receipt); break
+      case 'wrong restored release': {
+        const path = join(directory, rollback), record = JSON.parse(fs.readFileSync(path, 'utf8'))
+        fs.writeFileSync(path, JSON.stringify({ ...record, release_id: identity(first) }))
+        break
+      }
+    }
+    assert.equal(cancel().status, 1)
+    assert.deepEqual(readState(directory), state)
+    assert.equal(fs.existsSync(receipt), failure === 'active recovery')
+    if (failure === 'dangling cancellation symlink') assert.equal(fs.lstatSync(receipt).isSymbolicLink(), true)
+  }))
+}
+
+for (const boundary of ['before-receipt', 'after-receipt', 'after-state']) {
+  test(`cancel-prepared resumes after interruption at ${boundary}`, () => cancellationFixture(({ directory, state, candidate, receipt, cancel }) => {
+    const method = boundary === 'after-state' ? 'renameSync' : 'linkSync'
+    const path = boundary === 'after-state' ? join(directory, 'state.json') : receipt
+    const crash = `const original = fs.${method}; fs.${method} = (from, to) => {
+      if (to === ${JSON.stringify(path)} && ${boundary === 'before-receipt'}) process.kill(process.pid, 'SIGKILL');
+      original(from, to);
+      if (to === ${JSON.stringify(path)}) process.kill(process.pid, 'SIGKILL');
+    }; cancelPrepared(process.env.TEST_DIR, ${JSON.stringify(candidate)}, 18);`
+    assert.equal(execute(directory, crash).signal, 'SIGKILL')
+    assert.equal(fs.existsSync(receipt), boundary !== 'before-receipt')
+    assert.equal(readState(directory).revision, boundary === 'after-state' ? 19 : 18)
+    if (boundary === 'after-receipt') {
+      const dir = JSON.stringify(directory)
+      const blocked = execute(directory, `const d=${dir},s=readState(d),m=s.operation.manifest;
+        const assert=(await import('node:assert/strict')).default;
+        assert.throws(()=>persist(d,s,{...s,revision:19,operation:null}));
+        assert.throws(()=>persist(d,s,advance(s,m,'images_ready')));
+      `)
+      assert.equal(blocked.status, 0, blocked.stderr)
+      assert.deepEqual(readState(directory), state)
+    }
+    assert.equal(cancel().status, 0)
+    assert.deepEqual(readState(directory), { ...state, operation: null, revision: 19 })
+  }))
 }
 
 test('phase transitions, repeat releases and manifest conflicts fail closed', () => {

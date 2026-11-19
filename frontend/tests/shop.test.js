@@ -20,8 +20,12 @@ async function click(text) {
 async function login(role = 'user') {
   const fetch = vi.fn(async (url) => {
     if (url.includes('/products')) return reply(productPage())
-    if (url.endsWith('/login')) return reply({ token: 'unit-jwt', token_type: 'bearer' })
-    if (url.endsWith('/me')) return reply({ id: 1, name: 'Buyer', role })
+    if (url.endsWith('/csrf-cookie')) {
+      document.cookie = 'XSRF-TOKEN=unit-csrf'
+      return { ok: true, status: 204 }
+    }
+    if (url.endsWith('/login')) return reply({ id: 1, name: 'Buyer', role })
+    if (url.endsWith('/me')) return reply({}, 401)
     if (url.endsWith('/logout')) return reply({ message: 'Logged out' })
     if (url.endsWith('/cart')) return reply({ data: cart })
     if (url.split('?')[0].endsWith('/orders')) return reply({ data: [order] })
@@ -37,36 +41,36 @@ async function login(role = 'user') {
 }
 
 describe('buyer and administrator UI', () => {
-  it('signs in with JWT, guards admin UI, loads the server cart, and logs out', async () => {
+  it('signs in with a cookie session, guards admin UI, loads the server cart, and logs out', async () => {
     const fetch = await login()
     expect(wrapper.text()).toContain('Вы вошли')
     expect(wrapper.text()).not.toContain('Заказы магазина')
     await click('Корзина')
     expect(wrapper.text()).toContain('Итого по текущим ценам: 25.00')
-    expect(fetch.mock.calls.find(([url]) => url.endsWith('/cart'))[1].headers.Authorization).toBe('Bearer unit-jwt')
+    expect(fetch.mock.calls.find(([url]) => url.endsWith('/cart'))[1].credentials).toBe('same-origin')
     await click('Выйти')
     expect(wrapper.text()).toContain('Вы вышли')
     expect(wrapper.text()).not.toContain('Мои заказы')
   })
 
   it('opens sign-in before attempting to add a guest item', async () => {
-    const fetch = vi.fn(async () => reply(productPage()))
+    const fetch = vi.fn(async url => url.endsWith('/me') ? reply({}, 401) : reply(productPage()))
     vi.stubGlobal('fetch', fetch)
     wrapper = mount(App); await flushPromises()
     await click('Войти и заказать')
     expect(wrapper.find('[name=password]').exists()).toBe(true)
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
 
-  it('drops the local session when logout cannot reach the server', async () => {
+  it('keeps the session and reports a failed logout', async () => {
     const fetch = await login()
     fetch.mockRejectedValueOnce(new Error('offline'))
     await click('Выйти')
-    expect(wrapper.text()).toContain('Сервер не подтвердил отзыв токена')
-    expect(wrapper.text()).not.toContain('Мои заказы')
+    expect(wrapper.text()).toContain('Сервис недоступен')
+    expect(wrapper.text()).toContain('Мои заказы')
   })
 
-  it('returns to sign-in after an expired JWT', async () => {
+  it('returns to sign-in after an expired session', async () => {
     const fetch = await login()
     fetch.mockResolvedValueOnce(reply({}, 401))
     await click('Корзина')

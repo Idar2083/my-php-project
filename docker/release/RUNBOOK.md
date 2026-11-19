@@ -148,6 +148,12 @@ DEPLOY_ROOT/
 обновления адаптера до следующего тега. Скрипты запускаются через sh/node,
 executable bit не требуется. Не разрешать посторонним изменять tools и каталоги.
 
+Для диагностики перехода `prepared → images_ready` установленные
+`deploy-server.mjs` и `deploy-bundle.mjs` должны поддерживать формат
+`[image-acquisition]` из того же проверенного набора. CI передаёт только этап,
+имя сервиса, доступный код выхода Docker и фиксированную категорию ошибки.
+Обновление кандидата само по себе не обновляет установленные `deploy-tools`.
+
 До первого bootstrap подготовить `shared/runtime.env` (0600) с **полной** конфигурацией Compose:
 параметры из существующего корневого `.env`, NGINX_PORT, APP_URL, постоянные APP_KEY и
 JWT_SECRET, DB_*/POSTGRES_*, Redis/RabbitMQ/MinIO credentials. Это не копия `.env`
@@ -570,6 +576,32 @@ key с `restrict` не подходит для туннеля; не снимат
 HTTP внутри SSH-туннеля не означает настроенный публичный HTTPS. Публичный
 запуск требует отдельной проверки домена, DNS, TLS/renewal и ingress.
 
+### Проверка браузерной авторизации через публичный HTTPS
+
+Используйте отдельный профиль браузера и утверждённую синтетическую учётную запись.
+Проводите проверку после выпуска версии с браузерными сессиями.
+
+1. Сверьте публичный HTTPS URL SPA с `APP_URL`. Host и порт должны совпадать.
+   При стандартном HTTPS-порте используйте URL без явного `:443`. SPA и
+   `/api` должны обслуживаться с одного origin.
+2. Откройте SPA и начните вход или регистрацию. В Network подтвердите
+   `GET /api/csrf-cookie` со статусом `204` перед отправкой формы.
+   Проверьте наличие CSRF-cookie и атрибуты session cookie
+   `Secure`, `HttpOnly`, `SameSite=Lax`, `Path=/` и host-only.
+3. Зарегистрируйте синтетического пользователя или войдите под ним.
+   Проверьте имя пользователя в интерфейсе и статус `200` для `GET /api/me`.
+4. Обновите страницу через F5. Профиль должен восстановиться через `/api/me`.
+5. Откройте тот же URL в новой вкладке того же профиля браузера.
+   Убедитесь, что профиль доступен без повторного входа.
+6. Выполните logout во второй вкладке и проверьте успешный `POST /api/logout`.
+7. Вернитесь в первую вкладку и обновите страницу. Подтвердите `401` у
+   `GET /api/me` и отсутствие доступа к корзине без повторного входа.
+   Проверку повторной отправки старой cookie выполняйте автоматизированным
+   тестом на изолированном стенде.
+
+Фиксируйте только статусы, имена cookies и их атрибуты. Не переносите значения
+cookies, токены, пароли, тела запросов или HAR в логи и отчёты.
+
 ### Доставка, первый bootstrap и повтор
 
 CI сверяет Git-тег (включая annotated tag) с CI_COMMIT_SHA. Manifest сверяется
@@ -816,8 +848,25 @@ sh docker/release/release.sh check "$STATE_DIRECTORY" \
 | `prepare-backup` | новая операция / prepared → quiesced | Проверки, pinned image acquisition, preflight, последовательная остановка writers; quiesced после exit 0 без OOM |
 | `backup` | ранние фазы → backup_ready | Та же подготовка; PostgreSQL dump/globals и offline MinIO snapshot, hashes/TOC и изолированный restore-test |
 | `continue` | backup_ready или фаза той же операции с launch journal | migrating → migrated → starting → verified → committed; атомарное обновление current/previous, затем release_succeeded receipt/event |
+| `cancel-prepared` | prepared, есть current, совпадают identity кандидата и ожидаемая revision | idle; current/previous/data сохраняются, revision увеличивается, Docker не вызывается |
 | `rollback` | backup_ready и есть current | rolling_back, запуск сохранённых проверенных контейнеров current, health; current/previous неизменны, operation очищается, rollback_succeeded |
 | `rollback` | migrating / migrated / starting / verified | recovery_required, остановка проверенных writers; ненулевой код, без отката схемы и запуска прежней версии |
+
+Для согласованной отмены используйте проверенный комплект кода, содержащий
+`cancel-prepared`, и оригинальный manifest кандидата:
+
+~~~sh
+sh docker/release/release.sh cancel-prepared "$STATE_DIRECTORY" \
+  "$RELEASE_MANIFEST" "$EXPECTED_REVISION"
+~~~
+
+Команда под общей блокировкой сверяет журналы по полной identity. Журналы
+других операций сохраняются. Связанный с кандидатом журнал или неоднозначная
+запись останавливают отмену. Перед публикацией state команда записывает
+`prepared_cancelled` в файл `recovery-<identity>`. Старые версии deploy
+видят этот путь как запрет продолжения. После прерывания повторите команду
+с тем же manifest и исходной revision, затем проверьте `status`, прежние ID
+релизов и результат проверки health.
 
 Последовательность успешного релиза:
 

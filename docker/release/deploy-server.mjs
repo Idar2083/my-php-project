@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import { join, dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { hash, parseBundle, readPrivateFile, requireValue, serverRoot } from './deploy-bundle.mjs'
+import { hash, imageFailureDiagnostic, parseBundle, readPrivateFile, requireValue, serverRoot } from './deploy-bundle.mjs'
 
 function privateDirectory(path) {
   const stat = fs.lstatSync(path)
@@ -79,6 +79,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     await receive(root, Buffer.concat(chunks), { tag, sha, pipeline, registry }, checksum)
     console.log('Production release readiness and coordinator completion confirmed.')
   } catch (error) {
+    const imageFailure = imageFailureDiagnostic(error?.message)
+    if (imageFailure) process.stderr.write(imageFailure + '\n')
     process.stderr.write(error.message === 'FIRST_BOOTSTRAP_REQUIRED'
       ? 'Validated bundle delivered. Manual first bootstrap is required; no production services were started.\n'
       : 'Production release stopped. Preserve release bundle, state, backup and journals; inspect coordinator status.\n')

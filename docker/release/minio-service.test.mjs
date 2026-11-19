@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { DockerBackup } from './backup-docker.mjs'
 
@@ -32,6 +33,11 @@ test('MinIO service check uses only the restored volume and loopback namespace w
   assert.ok(create.args.includes('type=volume,src=owned-volume,dst=/data'))
   assert.ok(create.args.includes(metadata.minio.image))
   assert.ok(probe.args.includes('--network=container:owned-restored-container'))
+  assert.ok(probe.args.includes('-i'))
+  assert.ok(probe.args.includes('--cap-drop=ALL'))
+  for (const option of ['--mount', '--user', '--privileged', '--cap-add']) assert.ok(!probe.args.includes(option))
+  assert.deepEqual(probe.args.slice(-5), ['--entrypoint', 'php', 'test-utility-not-executed', '--', '/var/www/app/vendor/autoload.php'])
+  assert.equal(probe.options.input, fileURLToPath(new URL('./minio-service-check.php', import.meta.url)))
   assert.deepEqual(probe.options.environment, create.options.environment)
   for (const value of Object.values(create.options.environment)) {
     assert.equal([...create.args, ...probe.args].some(arg => arg.includes(value)), false)

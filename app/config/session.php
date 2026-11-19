@@ -22,6 +22,9 @@ return [
 
     'driver' => env('SESSION_DRIVER', 'database'),
 
+    // Serialize ordinary requests that share a session.
+    'block' => true,
+
     /*
     |--------------------------------------------------------------------------
     | Session Lifetime

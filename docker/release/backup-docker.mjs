@@ -27,7 +27,17 @@ export class DockerBackup {
           const inspect = spawnSync('docker', ['inspect', helperName, '--format', '{{index .Config.Labels "pizza.backup-helper"}}'], { env: this.env, encoding: 'utf8', timeout: 10000 })
           if (inspect.status === 0 && inspect.stdout.trim() === helperOwner) spawnSync('docker', ['rm', '-f', helperName], { env: this.env, stdio: 'ignore', timeout: 10000 })
         }
-        throw new Error(result.stderr?.includes('No space left on device') ? 'INSUFFICIENT_BACKUP_SPACE' : 'DOCKER_BACKUP_COMMAND_FAILED')
+        const stderr = result.stderr ?? ''
+        const storageFull = stderr.includes('No space left on device')
+        const reason = storageFull ? 'storage-full'
+          : result.error?.code === 'ETIMEDOUT' ? 'timeout'
+          : result.error?.code === 'ENOENT' ? 'docker-unavailable'
+          : /(?:unauthorized:|authentication required|pull access denied|\b(?:401 Unauthorized|403 Forbidden)\b)/i.test(stderr) ? 'registry-access'
+          : /(?:\bdial tcp\b|no such host|TLS handshake timeout|x509:|i\/o timeout|connection refused)/i.test(stderr) ? 'network'
+          : 'unknown'
+        throw Object.assign(new Error(storageFull ? 'INSUFFICIENT_BACKUP_SPACE' : 'DOCKER_BACKUP_COMMAND_FAILED'), {
+          exitCode: result.status, reason,
+        })
       }
       if (stdout !== null) fs.fsyncSync(stdout)
       return result.stdout?.trim() ?? ''
@@ -104,10 +114,10 @@ export class DockerBackup {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
       }
       ensure(ready, 'RESTORED_MINIO_NOT_READY')
-      const report = JSON.parse(this.run(['run', '--rm', '--pull=never', `--network=container:${container}`, '--read-only',
+      // The host operator reads the private bundle file; the probe keeps the image's user.
+      const report = JSON.parse(this.run(['run', '--rm', '--pull=never', '-i', `--network=container:${container}`, '--read-only',
         '--tmpfs', '/tmp:rw,nosuid,nodev', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--env', 'MINIO_ROOT_USER', '--env', 'MINIO_ROOT_PASSWORD',
-        '--mount', `type=bind,src=${serviceCheck},dst=/minio-service-check.php,readonly`, '--entrypoint', 'php',
-        this.config.utility_image, '/minio-service-check.php', '/var/www/app/vendor/autoload.php'], { environment }))
+        '--entrypoint', 'php', this.config.utility_image, '--', '/var/www/app/vendor/autoload.php'], { input: serviceCheck, environment }))
       ensure(Number.isSafeInteger(report.buckets) && Number.isSafeInteger(report.versions) && Number.isSafeInteger(report.bytes) &&
         report.buckets >= 0 && report.versions >= 0 && report.bytes >= 0 && /^[a-f0-9]{64}$/.test(report.content_sha256))
       return report

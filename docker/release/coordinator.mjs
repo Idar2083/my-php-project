@@ -5,24 +5,15 @@ import { isDeepStrictEqual } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import { advance, assertOperationLock, assertNoRecovery, begin, checkBackupCandidate, checkCandidate, identity, persist, readState } from './state.mjs'
 import { checkBackupReadiness, config, createBackup, preflight, recordVerifiedBackup, restoreTest, verifyBackup } from './backup.mjs'
-import { ensure, readJson } from './backup-format.mjs'
+import { ensure, readJson, savePlan } from './backup-format.mjs'
 import { validate as validateManifest } from './manifest.mjs'
-import { DockerCoordinator } from './coordinator-docker.mjs'
+import { atImageStage, DockerCoordinator } from './coordinator-docker.mjs'
 
 export function privateDirectory(directory) {
   const stat = fs.lstatSync(directory)
   ensure(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0)
 }
-export function savePlan(path, directory, plan) {
-  const temporary = fs.mkdtempSync(join(directory, '.quiesce-'))
-  try {
-    const staged = join(temporary, 'plan.json')
-    fs.writeFileSync(staged, JSON.stringify(plan) + '\n', { flag: 'wx', mode: 0o600, flush: true })
-    fs.linkSync(staged, path)
-    const fd = fs.openSync(directory, 'r')
-    try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
-  } finally { fs.rmSync(temporary, { recursive: true }) }
-}
+export { savePlan }
 
 export function configurationHash(configuration, settings, backupRoot) {
   return jsonHash([configuration, settings, fs.realpathSync(backupRoot)])
@@ -49,9 +40,11 @@ function prepare(directory, manifest, bundle, runtime, backupRoot, driver, inclu
   if (!state.operation) { persist(directory, state, next); state = next }
   if (state.operation.phase === 'prepared') {
     driver.images(manifest, true)
-    const ready = advance(state, manifest, 'images_ready')
-    persist(directory, state, ready)
-    state = ready
+    state = atImageStage('images-ready-persist', () => {
+      const ready = advance(state, manifest, 'images_ready')
+      persist(directory, state, ready)
+      return ready
+    })
   } else driver.images(manifest)
 
   const readyRevision = state.revision - ({ images_ready: 0, quiescing: 1, quiesced: 2, backup_ready: 3 }[state.operation.phase])

@@ -7,6 +7,19 @@ import { validate as validateManifest } from './manifest.mjs'
 // Ingress first; MinIO last, after all of its application writers have exited.
 export const writerOrder = ['nginx', 'report-scheduler', 'outbox-worker', 'report-worker', 'php', 'minio-init', 'minio']
 
+// The remote wrapper and CI accept only this fixed diagnostic format.
+export function atImageStage(stage, action) {
+  try { return action() } catch (error) {
+    const image = /^(php|nginx)-/.exec(stage)?.[1]
+    const reason = ['UNSUPPORTED_DOCKER_PLATFORM', 'RELEASE_IMAGE_PLATFORM_MISMATCH'].includes(error?.message) ? 'platform'
+      : error?.message === 'RELEASE_IMAGE_NOT_AVAILABLE' ? 'image-mismatch'
+      : error instanceof SyntaxError ? 'invalid-response'
+      : error?.reason ?? (stage === 'images-ready-persist' ? 'state-write' : 'unknown')
+    const exitCode = Number.isInteger(error?.exitCode) ? ` exit_code=${error.exitCode}` : ''
+    throw new Error(`Production release failed [image-acquisition] stage=${stage}${image ? ' image=' + image : ''}${exitCode} reason=${reason}`, { cause: error })
+  }
+}
+
 export class DockerCoordinator {
   constructor(settings) {
     this.backup = new DockerBackup(settings)
@@ -19,17 +32,21 @@ export class DockerCoordinator {
   }
   image(reference, platform) {
     const image = JSON.parse(this.backup.run(['image', 'inspect', reference]))[0]
-    ensure(/^sha256:[a-f0-9]{64}$/.test(image.Id) && Array.isArray(image.RepoDigests) && image.RepoDigests.includes(reference), 'RELEASE_IMAGE_NOT_AVAILABLE')
+    ensure(/^sha256:[a-f0-9]{64}$/.test(image?.Id) && Array.isArray(image.RepoDigests) && image.RepoDigests.includes(reference), 'RELEASE_IMAGE_NOT_AVAILABLE')
     if (platform) ensure(image.Os === platform.Os && image.Architecture === platform.Arch, 'RELEASE_IMAGE_PLATFORM_MISMATCH')
     return image.Id
   }
   images(manifest, pull = false) {
     validateManifest(manifest)
-    const platform = JSON.parse(this.backup.run(['version', '--format', '{{json .Server}}']))
-    ensure(platform.Os === 'linux' && typeof platform.Arch === 'string' && platform.Arch.length > 0, 'UNSUPPORTED_DOCKER_PLATFORM')
-    for (const reference of Object.values(manifest.images)) {
-      if (pull) this.backup.run(['pull', '--quiet', reference], { discardOutput: true })
-      this.image(reference, platform)
+    const stage = pull ? atImageStage : (_stage, action) => action()
+    const platform = stage('docker-version', () => {
+      const server = JSON.parse(this.backup.run(['version', '--format', '{{json .Server}}']))
+      ensure(server?.Os === 'linux' && typeof server.Arch === 'string' && server.Arch.length > 0, 'UNSUPPORTED_DOCKER_PLATFORM')
+      return server
+    })
+    for (const [name, reference] of Object.entries(manifest.images)) {
+      if (pull) stage(`${name}-pull`, () => this.backup.run(['pull', '--quiet', reference], { discardOutput: true }))
+      stage(`${name}-inspect`, () => this.image(reference, platform))
     }
   }
   writer(container, project) {

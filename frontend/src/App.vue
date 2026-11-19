@@ -1,5 +1,5 @@
 <script setup>
-import { provide, ref } from 'vue'
+import { onMounted, onUnmounted, provide, ref } from 'vue'
 import { createApi, resource } from './api/client.js'
 import Catalog from './components/Catalog.vue'
 import AuthForm from './components/AuthForm.vue'
@@ -13,18 +13,70 @@ const busy = ref(false)
 const error = ref(null)
 const notice = ref('')
 let pendingProduct = null
-const api = createApi(() => {
-  api.setToken(null); user.value = null; view.value = 'login'; pendingProduct = null
-  notice.value = 'Сессия завершена. Войдите снова.'
-})
+let sessionRevision = 0
+const restoring = ref(false)
+const restoreError = ref(null)
+const api = createApi(clearSession, { browserSession: true })
 provide('api', api)
+function clearSession() {
+  sessionRevision++
+  restoreError.value = null
+  api.reset()
+  if (user.value) {
+    view.value = 'login'
+    notice.value = 'Сессия завершена. Войдите снова.'
+  }
+  user.value = null
+  pendingProduct = null
+}
+async function restoreSession() {
+  if (busy.value || restoring.value) return
+  const revision = sessionRevision
+  restoring.value = true
+  restoreError.value = null
+  try {
+    const profile = await api.request('/me', { authenticated: false })
+    if (revision !== sessionRevision || busy.value) return
+    if (!profile?.id || !['user', 'admin'].includes(profile.role)) throw new Error('Не удалось проверить сессию.')
+    if (user.value && user.value.id !== profile.id) {
+      clearSession()
+      view.value = 'catalog'
+      notice.value = ''
+    }
+    if (['login', 'register'].includes(view.value) || (view.value === 'admin' && profile.role !== 'admin')) {
+      pendingProduct = null
+      view.value = 'catalog'
+    }
+    user.value = profile
+  } catch (failure) {
+    if (revision !== sessionRevision || busy.value) return
+    if (failure.status === 401) {
+      if (user.value) clearSession()
+    } else {
+      restoreError.value = failure
+    }
+  } finally {
+    restoring.value = false
+  }
+}
+function restoreOnVisibility() {
+  if (document.visibilityState === 'visible') void restoreSession()
+}
+void restoreSession()
+onMounted(() => {
+  document.addEventListener('visibilitychange', restoreOnVisibility)
+})
+onUnmounted(() => document.removeEventListener('visibilitychange', restoreOnVisibility))
 function navigate(target) {
-  if (busy.value) return
+  if (busy.value || (restoring.value && !user.value)) return
   if (['cart', 'checkout', 'orders', 'admin'].includes(target) && !user.value) target = 'login'
   if (target === 'admin' && user.value?.role !== 'admin') target = 'catalog'
   view.value = target; error.value = null; notice.value = ''
 }
 async function authenticated(profile) {
+  sessionRevision++
+  restoreError.value = null
+  api.reset()
   user.value = profile; view.value = 'catalog'; error.value = null; notice.value = 'Вы вошли в аккаунт.'
   if (pendingProduct !== null) {
     const id = pendingProduct; pendingProduct = null
@@ -32,7 +84,7 @@ async function authenticated(profile) {
   }
 }
 async function addProduct(id) {
-  if (busy.value) return
+  if (busy.value || (restoring.value && !user.value)) return
   if (!user.value) { pendingProduct = id; navigate('login'); return }
   busy.value = true; error.value = null; notice.value = ''
   try {
@@ -44,12 +96,15 @@ async function addProduct(id) {
 async function logout() {
   if (busy.value) return
   busy.value = true; error.value = null
-  let confirmed = false
-  try { await api.request('/logout', { method: 'POST' }); confirmed = true }
-  catch { /* Always discard the local session, including on network failure. */ }
-  finally {
-    api.setToken(null); user.value = null; pendingProduct = null; view.value = 'catalog'; busy.value = false
-    notice.value = confirmed ? 'Вы вышли из аккаунта.' : 'Локальная сессия завершена. Сервер не подтвердил отзыв токена.'
+  try {
+    await api.request('/logout', { method: 'POST' })
+    clearSession()
+    view.value = 'catalog'
+    notice.value = 'Вы вышли из аккаунта.'
+  } catch (failure) {
+    if (failure.status !== 401) error.value = failure
+  } finally {
+    busy.value = false
   }
 }
 function ordered(order) {
@@ -68,18 +123,21 @@ function ordered(order) {
           <button v-if="user.role === 'admin'" class="secondary" :disabled="busy" @click="navigate('admin')">Заказы магазина</button>
           <span>{{ user.name }}</span><button :disabled="busy" @click="logout">Выйти</button>
         </template>
-        <template v-else>
+        <template v-else-if="!restoring && !restoreError">
           <button class="secondary" :disabled="busy" @click="navigate('login')">Вход</button>
           <button :disabled="busy" @click="navigate('register')">Регистрация</button>
         </template>
       </div>
     </div>
     <div class="feedback">
+      <p v-if="restoring" role="status">Проверяем сессию…</p>
+      <RequestError :error="restoreError" />
+      <button v-if="restoreError" :disabled="busy" @click="restoreSession">Повторить проверку сессии</button>
       <RequestError :error="error" />
       <p v-if="notice" class="notice" role="status">{{ notice }}</p>
       <p v-if="busy" role="status">Выполняем запрос…</p>
     </div>
-    <Catalog v-if="view === 'catalog'" :busy="busy" :signed-in="!!user" @add="addProduct" />
+    <Catalog v-if="view === 'catalog'" :busy="busy || (restoring && !user)" :signed-in="!!user" @add="addProduct" />
     <main v-else>
       <AuthForm v-if="view === 'login' || view === 'register'" :key="view" :register="view === 'register'" @authenticated="authenticated" @busy="busy = $event" />
       <CartView v-else-if="view === 'cart' && user" @checkout="navigate('checkout')" />

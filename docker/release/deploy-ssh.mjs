@@ -3,7 +3,7 @@ import os from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
-import { buildBundle, hash, requireValue, serverRoot, verifyPublication } from './deploy-bundle.mjs'
+import { buildBundle, hash, imageFailureDiagnostic, requireValue, serverRoot, verifyPublication } from './deploy-bundle.mjs'
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'], ...options })
   if (result.status !== 0 || result.error) throw Object.assign(new Error('CHILD_PROCESS_FAILED'), {
@@ -44,6 +44,7 @@ export function diagnostic(error, stage) {
       'Production release stopped. Inspect coordinator status and server journals.'],
   ]
   const safe = messages.filter(([pattern]) => pattern.test(stderr)).map(([, message]) => message)
+  if (category === 'server-command') safe.push(...stderr.split(/\r?\n/).map(imageFailureDiagnostic).filter(Boolean))
   if (stderr) details.push('stderr: ' + (safe.join(' ') || '[unrecognized output withheld]'))
   return details.join(' ') + '\n'
 }

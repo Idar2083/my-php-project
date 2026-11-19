@@ -55,7 +55,7 @@ final class AdminUserController extends Controller
         }
 
         /** @var User $actor */
-        $actor = $request->user('api');
+        $actor = $request->user();
 
         return new AdminUserResource(
             $this->changeUserRoleHandler->handle(
