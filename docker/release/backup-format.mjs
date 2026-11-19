@@ -15,6 +15,16 @@ export function digest(path) {
   return hash.digest('hex')
 }
 export function readJson(path) { ensure(fs.lstatSync(path).isFile()); return JSON.parse(fs.readFileSync(path, 'utf8')) }
+export function savePlan(path, directory, plan) {
+  const temporary = fs.mkdtempSync(join(directory, '.quiesce-'))
+  try {
+    const staged = join(temporary, 'plan.json')
+    fs.writeFileSync(staged, JSON.stringify(plan) + '\n', { flag: 'wx', mode: 0o600, flush: true })
+    fs.linkSync(staged, path)
+    const fd = fs.openSync(directory, 'r')
+    try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }) }
+}
 export function validateMetadata(m) {
   fields(m, ['schema_version', 'backup_id', 'created_at', 'project', 'release_id', 'git_sha', 'operation_id', 'state_revision', 'postgres', 'minio', 'files'])
   ensure(m.schema_version === 1 && typeof m.backup_id === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(m.backup_id))

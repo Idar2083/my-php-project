@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { pathToFileURL } from 'node:url'
 import { advance, assertOperationLock, assertNoRecovery, begin, checkBackupCandidate, checkCandidate, identity, persist, readState } from './state.mjs'
 import { checkBackupReadiness, config, createBackup, preflight, recordVerifiedBackup, restoreTest, verifyBackup } from './backup.mjs'
-import { ensure, readJson } from './backup-format.mjs'
+import { ensure, readJson, savePlan } from './backup-format.mjs'
 import { validate as validateManifest } from './manifest.mjs'
 import { atImageStage, DockerCoordinator } from './coordinator-docker.mjs'
 
@@ -13,16 +13,7 @@ export function privateDirectory(directory) {
   const stat = fs.lstatSync(directory)
   ensure(stat.isDirectory() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0)
 }
-export function savePlan(path, directory, plan) {
-  const temporary = fs.mkdtempSync(join(directory, '.quiesce-'))
-  try {
-    const staged = join(temporary, 'plan.json')
-    fs.writeFileSync(staged, JSON.stringify(plan) + '\n', { flag: 'wx', mode: 0o600, flush: true })
-    fs.linkSync(staged, path)
-    const fd = fs.openSync(directory, 'r')
-    try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
-  } finally { fs.rmSync(temporary, { recursive: true }) }
-}
+export { savePlan }
 
 export function configurationHash(configuration, settings, backupRoot) {
   return jsonHash([configuration, settings, fs.realpathSync(backupRoot)])

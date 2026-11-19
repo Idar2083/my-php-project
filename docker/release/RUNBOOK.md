@@ -848,8 +848,25 @@ sh docker/release/release.sh check "$STATE_DIRECTORY" \
 | `prepare-backup` | новая операция / prepared → quiesced | Проверки, pinned image acquisition, preflight, последовательная остановка writers; quiesced после exit 0 без OOM |
 | `backup` | ранние фазы → backup_ready | Та же подготовка; PostgreSQL dump/globals и offline MinIO snapshot, hashes/TOC и изолированный restore-test |
 | `continue` | backup_ready или фаза той же операции с launch journal | migrating → migrated → starting → verified → committed; атомарное обновление current/previous, затем release_succeeded receipt/event |
+| `cancel-prepared` | prepared, есть current, совпадают identity кандидата и ожидаемая revision | idle; current/previous/data сохраняются, revision увеличивается, Docker не вызывается |
 | `rollback` | backup_ready и есть current | rolling_back, запуск сохранённых проверенных контейнеров current, health; current/previous неизменны, operation очищается, rollback_succeeded |
 | `rollback` | migrating / migrated / starting / verified | recovery_required, остановка проверенных writers; ненулевой код, без отката схемы и запуска прежней версии |
+
+Для согласованной отмены используйте проверенный комплект кода, содержащий
+`cancel-prepared`, и оригинальный manifest кандидата:
+
+~~~sh
+sh docker/release/release.sh cancel-prepared "$STATE_DIRECTORY" \
+  "$RELEASE_MANIFEST" "$EXPECTED_REVISION"
+~~~
+
+Команда под общей блокировкой сверяет журналы по полной identity. Журналы
+других операций сохраняются. Связанный с кандидатом журнал или неоднозначная
+запись останавливают отмену. Перед публикацией state команда записывает
+`prepared_cancelled` в файл `recovery-<identity>`. Старые версии deploy
+видят этот путь как запрет продолжения. После прерывания повторите команду
+с тем же manifest и исходной revision, затем проверьте `status`, прежние ID
+релизов и результат проверки health.
 
 Последовательность успешного релиза:
 
