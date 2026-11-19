@@ -7,7 +7,7 @@ import { advance, assertOperationLock, assertNoRecovery, begin, checkBackupCandi
 import { checkBackupReadiness, config, createBackup, preflight, recordVerifiedBackup, restoreTest, verifyBackup } from './backup.mjs'
 import { ensure, readJson } from './backup-format.mjs'
 import { validate as validateManifest } from './manifest.mjs'
-import { DockerCoordinator } from './coordinator-docker.mjs'
+import { atImageStage, DockerCoordinator } from './coordinator-docker.mjs'
 
 export function privateDirectory(directory) {
   const stat = fs.lstatSync(directory)
@@ -49,9 +49,11 @@ function prepare(directory, manifest, bundle, runtime, backupRoot, driver, inclu
   if (!state.operation) { persist(directory, state, next); state = next }
   if (state.operation.phase === 'prepared') {
     driver.images(manifest, true)
-    const ready = advance(state, manifest, 'images_ready')
-    persist(directory, state, ready)
-    state = ready
+    state = atImageStage('images-ready-persist', () => {
+      const ready = advance(state, manifest, 'images_ready')
+      persist(directory, state, ready)
+      return ready
+    })
   } else driver.images(manifest)
 
   const readyRevision = state.revision - ({ images_ready: 0, quiescing: 1, quiesced: 2, backup_ready: 3 }[state.operation.phase])

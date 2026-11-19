@@ -148,6 +148,12 @@ DEPLOY_ROOT/
 обновления адаптера до следующего тега. Скрипты запускаются через sh/node,
 executable bit не требуется. Не разрешать посторонним изменять tools и каталоги.
 
+Для диагностики перехода `prepared → images_ready` установленные
+`deploy-server.mjs` и `deploy-bundle.mjs` должны поддерживать формат
+`[image-acquisition]` из того же проверенного набора. CI передаёт только этап,
+имя сервиса, доступный код выхода Docker и фиксированную категорию ошибки.
+Обновление кандидата само по себе не обновляет установленные `deploy-tools`.
+
 До первого bootstrap подготовить `shared/runtime.env` (0600) с **полной** конфигурацией Compose:
 параметры из существующего корневого `.env`, NGINX_PORT, APP_URL, постоянные APP_KEY и
 JWT_SECRET, DB_*/POSTGRES_*, Redis/RabbitMQ/MinIO credentials. Это не копия `.env`

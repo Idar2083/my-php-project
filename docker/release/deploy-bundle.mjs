@@ -58,6 +58,12 @@ export function parseBundle(bytes, expected, checksum) {
   requireValue(bytes.length <= 2 * 1024 * 1024 && hash(bytes) === checksum)
   return validateBundle(JSON.parse(bytes), expected)
 }
+// Used on both sides of SSH. Reject partial lines and arbitrary stderr.
+export function imageFailureDiagnostic(line) {
+  const match = /^Production release failed \[image-acquisition\] stage=(?:(docker-version|images-ready-persist)|(php|nginx)-(?:pull|inspect) image=\2)(?: exit_code=(?:0|[1-9][0-9]{0,2}))? reason=(?:platform|image-mismatch|invalid-response|state-write|storage-full|timeout|docker-unavailable|registry-access|network|unknown)$/.exec(line)
+  return match && match[0] === line ? match[0] : undefined
+}
+
 export function readPrivateFile(path) {
   const stat = fs.lstatSync(path)
   requireValue(stat.isFile() && stat.uid === process.getuid() && (stat.mode & 0o077) === 0)

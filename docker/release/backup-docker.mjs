@@ -27,7 +27,17 @@ export class DockerBackup {
           const inspect = spawnSync('docker', ['inspect', helperName, '--format', '{{index .Config.Labels "pizza.backup-helper"}}'], { env: this.env, encoding: 'utf8', timeout: 10000 })
           if (inspect.status === 0 && inspect.stdout.trim() === helperOwner) spawnSync('docker', ['rm', '-f', helperName], { env: this.env, stdio: 'ignore', timeout: 10000 })
         }
-        throw new Error(result.stderr?.includes('No space left on device') ? 'INSUFFICIENT_BACKUP_SPACE' : 'DOCKER_BACKUP_COMMAND_FAILED')
+        const stderr = result.stderr ?? ''
+        const storageFull = stderr.includes('No space left on device')
+        const reason = storageFull ? 'storage-full'
+          : result.error?.code === 'ETIMEDOUT' ? 'timeout'
+          : result.error?.code === 'ENOENT' ? 'docker-unavailable'
+          : /(?:unauthorized:|authentication required|pull access denied|\b(?:401 Unauthorized|403 Forbidden)\b)/i.test(stderr) ? 'registry-access'
+          : /(?:\bdial tcp\b|no such host|TLS handshake timeout|x509:|i\/o timeout|connection refused)/i.test(stderr) ? 'network'
+          : 'unknown'
+        throw Object.assign(new Error(storageFull ? 'INSUFFICIENT_BACKUP_SPACE' : 'DOCKER_BACKUP_COMMAND_FAILED'), {
+          exitCode: result.status, reason,
+        })
       }
       if (stdout !== null) fs.fsyncSync(stdout)
       return result.stdout?.trim() ?? ''

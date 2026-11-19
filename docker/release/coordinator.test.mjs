@@ -38,13 +38,15 @@ function execute(directory, code = '') {
       import fs from 'node:fs';
       import {fixtureFailure} from ${JSON.stringify(new URL('./release-test-diagnostics.mjs', import.meta.url).href)};
       import {prepareBackup} from ${JSON.stringify(coordinatorUrl)};
+      import {DockerCoordinator} from ${JSON.stringify(new URL('./coordinator-docker.mjs', import.meta.url).href)};
+      import {imageFailureDiagnostic} from ${JSON.stringify(new URL('./deploy-bundle.mjs', import.meta.url).href)};
       import {FakeCoordinator} from ${JSON.stringify(fakeUrl)};
       const directory=process.env.TEST_DIRECTORY;
       const manifest=JSON.parse(fs.readFileSync(directory+'/manifest.json','utf8'));
       const driver=new FakeCoordinator(directory+'/fixture.json');
       ${code}
       try { prepareBackup(directory,manifest,'unused-bundle','unused-runtime',directory+'/backup',driver) }
-      catch(error) {process.stderr.write(fixtureFailure(error, 'prepareBackup'));process.exitCode=1}
+      catch(error) {process.stderr.write(imageFailureDiagnostic(error.message) ?? fixtureFailure(error, 'prepareBackup'));process.exitCode=1}
     ` },
   })
 }
@@ -166,6 +168,72 @@ test('state write failures never stop writers before quiescing is durably record
     assert.deepEqual(read(directory).stops, [])
   }
 }))
+
+test('failed images_ready persistence reports its stage and retains prepared', () => fixture(directory => {
+  const result = execute(directory, `
+    const rename = fs.renameSync;
+    fs.renameSync = (source, destination) => {
+      if (JSON.parse(fs.readFileSync(source)).operation.phase === 'images_ready') throw new Error('PRIVATE_CANARY');
+      return rename(source, destination);
+    };
+  `)
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /stage=images-ready-persist reason=state-write$/)
+  assert.doesNotMatch(result.stderr, /PRIVATE_CANARY|exit_code=/)
+  assert.deepEqual(read(directory, 'state.json'), begin(baseline, manifest))
+  assert.deepEqual(read(directory).stops, [])
+}))
+
+for (const [failure, stage, exitCode, reason] of [
+  ['version-error', 'docker-version', 17, 'unknown'],
+  ['platform', 'docker-version', null, 'platform'],
+  ['php-pull', 'php-pull image=php', 23, 'registry-access'],
+  ['php-inspect', 'php-inspect image=php', 24, 'unknown'],
+  ['nginx-pull', 'nginx-pull image=nginx', 25, 'network'],
+  ['nginx-inspect', 'nginx-inspect image=nginx', 26, 'unknown'],
+  ['nginx-platform', 'nginx-inspect image=nginx', null, 'platform'],
+  ['php-digest', 'php-inspect image=php', null, 'image-mismatch'],
+]) {
+  test(`image preparation reports ${failure} and retains prepared without quiescing`, () => fixture(directory => {
+    // Use a local Docker CLI fixture so the real spawn, exit code and stderr handling run.
+    fs.writeFileSync(join(directory, 'docker'), `#!/bin/sh
+case "$1" in
+  version) stage=version ;;
+  pull|image)
+    case "$3" in */php@*) stage=php ;; */nginx@*) stage=nginx ;; *) exit 99 ;; esac
+    if [ "$1" = image ]; then stage="$stage-inspect"; else stage="$stage-pull"; fi ;;
+  *) exit 99 ;;
+esac
+case "${failure}:$stage" in
+  version-error:version) exit 17 ;;
+  platform:version) echo '{"Os":"windows","Arch":"amd64"}'; exit 0 ;;
+  php-pull:php-pull) echo 'unauthorized: PRIVATE_CANARY' >&2; exit 23 ;;
+  php-inspect:php-inspect) echo 'PRIVATE_CANARY' >&2; exit 24 ;;
+  nginx-pull:nginx-pull) echo 'dial tcp PRIVATE_CANARY' >&2; exit 25 ;;
+  nginx-inspect:nginx-inspect) exit 26 ;;
+esac
+case "$stage" in
+  version) echo '{"Os":"linux","Arch":"amd64"}' ;;
+  *-inspect)
+    arch=amd64
+    reference="$3"
+    if [ "${failure}:$stage" = nginx-platform:nginx-inspect ]; then arch=arm64; fi
+    if [ "${failure}:$stage" = php-digest:php-inspect ]; then reference=unexpected; fi
+    printf '[{"Id":"sha256:${'e'.repeat(64)}","RepoDigests":["%s"],"Os":"linux","Architecture":"%s"}]\n' "$reference" "$arch" ;;
+esac
+`, { mode: 0o700 })
+    const result = execute(directory, `
+      const adapter = new DockerCoordinator(driver.backup.config);
+      adapter.backup.env.PATH = directory + ':' + process.env.PATH;
+      driver.images = adapter.images.bind(adapter);
+    `)
+    assert.equal(result.status, 1)
+    assert.equal(result.stderr, `Production release failed [image-acquisition] stage=${stage}${exitCode === null ? '' : ' exit_code=' + exitCode} reason=${reason}`)
+    assert.deepEqual(read(directory, 'state.json'), begin(baseline, manifest))
+    assert.deepEqual(read(directory).stops, [])
+    assert.deepEqual(read(directory).calls, ['check', 'snapshot'])
+  }))
+}
 
 test('wrong project, conflicting release, missing/corrupt state and later phases fail before adapter operations', () => fixture(directory => {
   for (const contents of ['{bad', JSON.stringify({ ...baseline, project: 'other' }), JSON.stringify(begin(baseline, { ...manifest, pipeline_id: '999' }))]) {
