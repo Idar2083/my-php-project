@@ -8,7 +8,10 @@ import { ApiError } from '../src/api/client.js'
 import { product, productPage } from './fixtures.js'
 
 let wrapper
-afterEach(() => wrapper?.unmount())
+afterEach(() => {
+  wrapper?.unmount()
+  localStorage.clear()
+})
 const order = { id: 9, status: 'created', total_price: '25.00', items: [{ id: 1, product_id: 7, product_name: 'Original pizza', price: '12.50', quantity: 2 }], delivery_method: 'delivery', address: { city: 'City' } }
 const cart = { id: 1, items: [{ id: 2, product_id: 7, quantity: 2, product: { ...product, price: 12.5 } }] }
 function reply(data, status = 200) { return { ok: status < 400, status, json: async () => data } }
@@ -33,7 +36,7 @@ async function login(role = 'user') {
   })
   vi.stubGlobal('fetch', fetch)
   wrapper = mount(App)
-  await flushPromises(); await click('Вход')
+  await flushPromises(); await click('Войти')
   await wrapper.get('[name=email]').setValue('buyer@example.test')
   await wrapper.get('[name=password]').setValue('SafePassword!123')
   await wrapper.get('form').trigger('submit'); await flushPromises()
@@ -53,13 +56,68 @@ describe('buyer and administrator UI', () => {
     expect(wrapper.text()).not.toContain('Мои заказы')
   })
 
-  it('opens sign-in before attempting to add a guest item', async () => {
-    const fetch = vi.fn(async url => url.endsWith('/me') ? reply({}, 401) : reply(productPage()))
+  it('keeps guest items across refresh and sign-in, then opens checkout after a successful import', async () => {
+    let attempts = 0
+    const fetch = vi.fn(async (url, options) => {
+      if (url.endsWith('/me')) return reply({}, 401)
+      if (url.endsWith('/csrf-cookie')) {
+        document.cookie = 'XSRF-TOKEN=unit-csrf'
+        return { ok: true, status: 204 }
+      }
+      if (url.endsWith('/login')) return reply({ id: 1, name: 'Buyer', role: 'user' })
+      if (url.endsWith('/cart/import')) {
+        expect(JSON.parse(options.body)).toEqual({ items: [{ product_id: product.id, quantity: 1 }] })
+        return ++attempts === 1 ? reply({}, 503) : reply({ data: cart })
+      }
+      return reply(productPage())
+    })
     vi.stubGlobal('fetch', fetch)
     wrapper = mount(App); await flushPromises()
-    await click('Войти и заказать')
-    expect(wrapper.find('[name=password]').exists()).toBe(true)
-    expect(fetch).toHaveBeenCalledTimes(2)
+    await wrapper.get('summary').trigger('click')
+    expect(wrapper.get('details').attributes('open')).toBeDefined()
+    await click('В корзину')
+    await click('Корзина (1)')
+    await wrapper.get('[name=quantity]').setValue(2)
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.text()).toContain('Итого по текущим ценам: 1598.00')
+    await click('Удалить')
+    expect(wrapper.text()).toContain('Корзина пуста')
+    await click('Каталог')
+    await click('В корзину')
+    wrapper.unmount()
+    wrapper = mount(App); await flushPromises()
+    await click('Корзина (1)')
+    await click('Оформить заказ')
+    expect(wrapper.text()).toContain('Войдите или зарегистрируйтесь')
+    await click('Зарегистрироваться')
+    expect(wrapper.find('[name=name]').exists()).toBe(true)
+    await click('Уже есть аккаунт? Войти')
+    expect(fetch.mock.calls.every(([, options]) => options.method !== 'POST')).toBe(true)
+    await wrapper.get('[name=email]').setValue('buyer@example.test')
+    await wrapper.get('[name=password]').setValue('SafePassword!123')
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(wrapper.text()).toContain('Сервис недоступен')
+    expect(wrapper.get('[name=quantity]').element.value).toBe('1')
+    await click('Оформить заказ')
+    expect(wrapper.get('h1').text()).toBe('Оформление заказа')
+    expect(JSON.parse(localStorage.getItem('pizza.guest-cart'))).toEqual([])
+    expect(fetch.mock.calls.some(([url]) => url.endsWith('/orders'))).toBe(false)
+  })
+
+  it('adds to the authenticated cart, submits checkout and opens order history', async () => {
+    const fetch = await login()
+    fetch.mockImplementationOnce(async () => reply({ data: cart }))
+    await click('В корзину')
+    expect(fetch.mock.calls.at(-1)[0]).toBe('/api/cart/items')
+    await click('Корзина')
+    await click('Оформить заказ')
+    for (const field of ['region', 'city', 'street', 'house', 'postal_code']) await wrapper.get(`[name=${field}]`).setValue('Value')
+    fetch.mockImplementationOnce(async () => reply({ data: order }))
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(wrapper.text()).toContain('Заказ №9 оформлен')
+    expect(wrapper.text()).toContain('Подробнее о заказе №9')
+    await click('Выйти')
+    expect(wrapper.text()).toContain('Корзина (0)')
   })
 
   it('keeps the session and reports a failed logout', async () => {

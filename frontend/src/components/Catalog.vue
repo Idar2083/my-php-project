@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { fetchProducts } from '../api/products.js'
 
-defineProps({ busy: Boolean, signedIn: Boolean })
+defineProps({ busy: Boolean })
 const emit = defineEmits(['add'])
 
 const status = ref('loading')
@@ -82,12 +82,16 @@ onUnmounted(() => {
           <article>
             <p class="category">{{ product.category }}</p>
             <h2>{{ product.name }}</h2>
-            <p v-if="product.description" class="description">{{ product.description }}</p>
             <dl>
               <div><dt>Цена</dt><dd>{{ product.price }}</dd></div>
               <div><dt>Вес</dt><dd>{{ product.weight }}</dd></div>
             </dl>
-            <button :disabled="busy" @click="emit('add', product.id)">{{ signedIn ? 'В корзину' : 'Войти и заказать' }}</button>
+            <button :disabled="busy" @click="emit('add', product)">В корзину</button>
+            <details class="product-details">
+              <summary>Подробнее о товаре</summary>
+              <p v-if="product.description" class="description">{{ product.description }}</p>
+              <p v-else class="muted">Описание пока отсутствует.</p>
+            </details>
           </article>
         </li>
       </ul>

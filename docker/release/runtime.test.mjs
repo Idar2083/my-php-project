@@ -13,6 +13,14 @@ const manifest = create({ CI_COMMIT_SHA: 'a'.repeat(40), CI_PIPELINE_ID: '1',
   PHP_IMAGE: 'registry.example.test/pizza/php@sha256:' + 'b'.repeat(64),
   NGINX_IMAGE: 'registry.example.test/pizza/nginx@sha256:' + 'c'.repeat(64) })
 
+function releaseModel(directory, runtime) {
+  for (const name of ['docker-compose.yml', 'docker-compose.prod.yml', 'docker-compose.release.yml']) {
+    fs.copyFileSync(new URL(name, root), join(directory, name))
+  }
+  fs.writeFileSync(join(directory, '.env'), '')
+  return checkCompose(initialState('pizza-runtime-test'), manifest, directory, runtime)
+}
+
 function fixture(run) {
   const directory = fs.mkdtempSync(join(tmpdir(), 'pizza-runtime-test-'))
   try { run(directory) } finally { fs.rmSync(directory, { recursive: true }) }
@@ -23,17 +31,14 @@ test('private first-install runtime passes the actual release validator and bind
   const runtime = join(directory, 'runtime.env')
   assert.equal(fs.statSync(runtime).mode & 0o777, 0o600)
   const contents = fs.readFileSync(runtime, 'utf8')
-  for (const name of ['docker-compose.yml', 'docker-compose.prod.yml', 'docker-compose.release.yml']) {
-    fs.copyFileSync(new URL(name, root), join(directory, name))
-  }
-  fs.writeFileSync(join(directory, '.env'), '')
-  const model = checkCompose(initialState('pizza-runtime-test'), manifest, directory, runtime)
+  const model = releaseModel(directory, runtime)
   assert.equal(model.services.nginx.ports.length, 1)
   assert.equal(model.services.nginx.ports[0].host_ip, '127.0.0.1')
   assert.equal(model.services.nginx.ports[0].published, '8080')
   assert.equal(model.services.nginx.ports[0].target, 80)
   const env = model.services.php.environment
   assert.equal(env.APP_URL, 'http://127.0.0.1:8080')
+  assert.equal(env.TRUSTED_PROXY_IP, '')
   assert.ok(/^base64:[A-Za-z0-9+/]{43}=$/.test(env.APP_KEY))
   assert.ok(/^[a-f0-9]{64}$/.test(env.JWT_SECRET))
   assert.ok(env.DB_PASSWORD === model.services.postgres.environment.POSTGRES_PASSWORD)
@@ -52,6 +57,30 @@ test('private first-install runtime passes the actual release validator and bind
   assert.equal(createRuntime(directory, '9090'), false)
   assert.ok(fs.readFileSync(runtime, 'utf8') === contents)
   assert.ok(!fs.readdirSync(directory).some(name => name.startsWith('.runtime-')))
+}))
+
+test('public HTTPS origin and explicit proxy reach PHP without changing the loopback listener', () => fixture(directory => {
+  const cli = spawnSync(process.execPath, [
+    new URL('./create-runtime.mjs', import.meta.url).pathname, directory, '8080', 'https://pizza.example.test/',
+  ], { encoding: 'utf8' })
+  assert.equal(cli.status, 0)
+  const runtime = join(directory, 'runtime.env')
+  fs.appendFileSync(runtime, 'TRUSTED_PROXY_IP=192.0.2.10\n')
+  const model = releaseModel(directory, runtime)
+  assert.equal(model.services.php.environment.APP_URL, 'https://pizza.example.test')
+  assert.equal(model.services.php.environment.TRUSTED_PROXY_IP, '192.0.2.10')
+  assert.equal(model.services.nginx.ports[0].host_ip, '127.0.0.1')
+  assert.equal(model.services.nginx.ports[0].published, '8080')
+  assert.equal(createRuntime(directory, '8080', 'https://different.example.test'), false)
+  assert.match(fs.readFileSync(runtime, 'utf8'), /^APP_URL=https:\/\/pizza\.example\.test$/m)
+}))
+
+test('runtime preparation rejects a public URL that is not a clean HTTPS origin', () => fixture(directory => {
+  for (const url of ['http://pizza.example.test', 'https://pizza.example.test/shop',
+    'https://user@pizza.example.test', 'https://pizza.example.test/?a=b', 'https://pizza.example.test/\nNGINX_PORT=8080']) {
+    assert.throws(() => createRuntime(directory, '8080', url))
+    assert.equal(fs.existsSync(join(directory, 'runtime.env')), false)
+  }
 }))
 
 test('runtime preparation rejects unsafe permissions, symlinks and invalid ports without overwriting', () => fixture(directory => {

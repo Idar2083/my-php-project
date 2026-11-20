@@ -4,10 +4,16 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 // Operator preparation only. Never invoked by CI or the release coordinator.
-// No secrets in arguments, shell environment or stdout. This first-install
-// configuration deliberately supports only private access via an SSH tunnel.
-export function createRuntime(directory, port = '8080') {
+// No secrets in arguments, shell environment or stdout. Keep the HTTP listener
+// private even when the canonical application URL is public.
+export function createRuntime(directory, port = '8080', publicUrl) {
   if (!/^[1-9][0-9]{0,4}$/.test(port) || +port > 65535) throw new Error('INVALID_PORT')
+  let appUrl = `http://127.0.0.1:${port}`
+  if (publicUrl !== undefined) {
+    const url = new URL(publicUrl)
+    if (url.protocol !== 'https:' || (publicUrl !== url.origin && publicUrl !== url.origin + '/')) throw new Error('INVALID_PUBLIC_URL')
+    appUrl = url.origin
+  }
   const stat = fs.lstatSync(directory)
   if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || fs.realpathSync(directory) !== directory) throw new Error('PRIVATE_DIRECTORY_REQUIRED')
   const destination = join(directory, 'runtime.env')
@@ -19,7 +25,7 @@ export function createRuntime(directory, port = '8080') {
   const secret = () => randomBytes(32).toString('hex')
   const databasePassword = secret()
   const values = {
-    NGINX_PORT: `127.0.0.1:${port}`, APP_URL: `http://127.0.0.1:${port}`,
+    NGINX_PORT: `127.0.0.1:${port}`, APP_URL: appUrl,
     APP_KEY: 'base64:' + randomBytes(32).toString('base64'), JWT_SECRET: secret(),
     DB_CONNECTION: 'pgsql', DB_HOST: 'postgres', DB_PORT: '5432',
     DB_DATABASE: 'pizza', DB_USERNAME: 'pizza', DB_PASSWORD: databasePassword,
@@ -46,11 +52,11 @@ export function createRuntime(directory, port = '8080') {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    const [directory, port, ...extra] = process.argv.slice(2)
+    const [directory, port, publicUrl, ...extra] = process.argv.slice(2)
     if (!directory || extra.length) throw new Error('INVALID_ARGUMENTS')
-    console.log(createRuntime(resolve(directory), port) ? 'Private runtime file created.' : 'Existing private runtime file preserved; review its configuration separately.')
+    console.log(createRuntime(resolve(directory), port, publicUrl) ? 'Private runtime file created.' : 'Existing private runtime file preserved; review its configuration separately.')
   } catch {
-    process.stderr.write('Runtime preparation failed; check arguments, private directory and destination permissions. Existing files were not overwritten.\n')
+    process.stderr.write('Runtime preparation failed; expected DIRECTORY [PORT [PUBLIC_HTTPS_ORIGIN]]. Check private directory and destination permissions. Existing files were not overwritten.\n')
     process.exitCode = 1
   }
 }

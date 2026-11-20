@@ -3,6 +3,7 @@ x-app-production-environment: &app-production-environment
   APP_DEBUG: "false"
   APP_KEY: ${APP_KEY:?Set APP_KEY for production}
   APP_URL: ${APP_URL:?Set APP_URL for production}
+  TRUSTED_PROXY_IP: ${TRUSTED_PROXY_IP:-}
   LOG_CHANNEL: stderr
   SESSION_DRIVER: database
   SESSION_SECURE_COOKIE: "true"

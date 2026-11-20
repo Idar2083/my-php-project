@@ -32,33 +32,20 @@ class CartService
         return DB::transaction(function () use ($user, $productId, $quantity): Cart {
             $cart = $this->getOrCreateCart($user);
 
-            $product = Product::query()->findOrFail($productId);
+            $this->saveItem($cart, $productId, $quantity, additive: true);
 
-            $item = CartItem::query()
-                ->where('cart_id', $cart->id)
-                ->where('product_id', $product->id)
-                ->lockForUpdate()
-                ->first();
+            return $cart->load('items.product');
+        }, self::TRANSACTION_ATTEMPTS);
+    }
 
-            $newQuantity = ($item === null ? 0 : (int) $item->quantity) + $quantity;
+    /** @param list<array{product_id: int|numeric-string, quantity: int|numeric-string}> $items */
+    public function importItems(User $user, array $items): Cart
+    {
+        return DB::transaction(function () use ($user, $items): Cart {
+            $cart = $this->getOrCreateCart($user);
 
-            $this->validateCategoryLimit(
-                $cart,
-                $product,
-                $newQuantity,
-                $item?->id,
-            );
-
-            if ($item === null) {
-                CartItem::query()->create([
-                    'cart_id' => $cart->id,
-                    'product_id' => $product->id,
-                    'quantity' => $newQuantity,
-                ]);
-            } else {
-                $item->update([
-                    'quantity' => $newQuantity,
-                ]);
+            foreach ($items as $item) {
+                $this->saveItem($cart, (int) $item['product_id'], (int) $item['quantity'], additive: false);
             }
 
             return $cart->load('items.product');
@@ -130,6 +117,41 @@ class CartService
 
             return $cart->load('items.product');
         }, self::TRANSACTION_ATTEMPTS);
+    }
+
+    private function saveItem(Cart $cart, int $productId, int $quantity, bool $additive): void
+    {
+        // Keep a catalog update or delete from changing this line during the cart write.
+        $product = Product::query()->sharedLock()->findOrFail($productId);
+
+        $item = CartItem::query()
+            ->where('cart_id', $cart->id)
+            ->where('product_id', $product->id)
+            ->lockForUpdate()
+            ->first();
+
+        $currentQuantity = $item === null ? 0 : (int) $item->quantity;
+        // Import is a minimum target so a retry after a lost response does not add twice.
+        $newQuantity = $additive ? $currentQuantity + $quantity : max($currentQuantity, $quantity);
+
+        $this->validateCategoryLimit(
+            $cart,
+            $product,
+            $newQuantity,
+            $item?->id,
+        );
+
+        if ($item === null) {
+            CartItem::query()->create([
+                'cart_id' => $cart->id,
+                'product_id' => $product->id,
+                'quantity' => $newQuantity,
+            ]);
+        } else {
+            $item->update([
+                'quantity' => $newQuantity,
+            ]);
+        }
     }
 
     private function getOrCreateCart(User $user): Cart

@@ -33,9 +33,8 @@ manifest и identity текущего pipeline. На сервере дополн
 пустой `.env`, `release.json` и `delivery.json`. Отсутствие artifact с именем
 release-bundle соответствует этому протоколу.
 
-Реализация проверяется локально с fake transport; **production deploy на VPS не
-проверен**. VPS, DNS и TLS уже подготовлены по результатам первого аудита;
-подтверждённые проверки и оставшиеся условия описаны в
+Production deploy для `v1.0.5` завершился успешно (pipeline `3090982842`).
+История подготовки VPS, DNS и TLS описана в
 [FIRST-PRODUCTION-AUDIT.md](FIRST-PRODUCTION-AUDIT.md). Формат релиза:
 `vMAJOR.MINOR.PATCH`, например `v1.2.3`, без ведущих нулей и prerelease. Это
 принятая для этого deploy политика; теги нельзя перемещать или переиспользовать.
@@ -224,7 +223,9 @@ symlink или небезопасные права отклоняет. Суще�
 
 | Переменные | Согласование / назначение |
 | --- | --- |
-| `NGINX_PORT`, `APP_URL` | `127.0.0.1:8080` и `http://127.0.0.1:8080`; при другом порте изменить оба и локальный порт туннеля |
+| `NGINX_PORT` | Loopback bind контейнера Nginx, например `127.0.0.1:8080`. |
+| `APP_URL` | Внешний origin, например `https://anyapizza.ru`. Для закрытого запуска через туннель — локальный HTTP URL туннеля. |
+| `TRUSTED_PROXY_IP` | Один IPv4/IPv6-адрес непосредственного TLS-прокси, видимый контейнерному Nginx как `$remote_addr`. Для прямого HTTP оставить пустым. |
 | `APP_KEY`, `JWT_SECRET` | Постоянный Laravel AES-256 key (`base64:` + 32 bytes) и независимый случайный JWT secret |
 | `DB_CONNECTION`, `DB_HOST`, `DB_PORT` | `pgsql`, `postgres`, `5432` — внутренний адрес, не VPS IP |
 | `DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD` | В точности равны `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` |
@@ -233,6 +234,7 @@ symlink или небезопасные права отклоняет. Суще�
 | `PRODUCTS_CACHE_TTL` | `3600`; основной cache остаётся database, только migration использует Redis |
 | `RABBITMQ_USER`, `RABBITMQ_PASSWORD` | Compose передаёт те же credentials RabbitMQ и Laravel; host `rabbitmq`, port `5672`, vhost `/`, topology использует application defaults |
 | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_BUCKET` | Compose автоматически задаёт Laravel `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_BUCKET` из этих значений; отдельно AWS credentials не задавать |
+| `MINIO_IMAGE`, `MINIO_MC_IMAGE` | Для production — согласованные ссылки по digest. При отсутствии переменных Compose использует локальные теги community-образов. |
 | `POSTGRES_PORT`, `REDIS_PORT`, `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`, `MINIO_PORT`, `MINIO_CONSOLE_PORT` | Только interpolation базового dev Compose; production удаляет все эти port mappings |
 
 Compose фиксирует `APP_ENV=production`, `APP_DEBUG=false`, `LOG_CHANNEL=stderr`,
@@ -575,6 +577,70 @@ key с `restrict` не подходит для туннеля; не снимат
 [документация Docker](https://docs.docker.com/engine/network/port-publishing/)).
 HTTP внутри SSH-туннеля не означает настроенный публичный HTTPS. Публичный
 запуск требует отдельной проверки домена, DNS, TLS/renewal и ingress.
+
+### Runtime для публичного HTTPS
+
+Для новой публичной установки генератор принимает внешний HTTPS origin третьим
+аргументом. Listener контейнерного Nginx остаётся привязанным к loopback:
+
+```sh
+node /srv/pizza/deploy-tools/create-runtime.mjs /srv/pizza/shared 8080 https://anyapizza.ru
+```
+
+Для существующего релиза генератор сохраняет `runtime.env` побайтно. В отдельно
+согласованное окно, до начала новой release-операции, оператор меняет нужные
+значения в существующем `/srv/pizza/shared/runtime.env`, сохраняя права 0600,
+владельца и все ключи/пароли. Для `v1.0.5` исходный `APP_URL` был loopback, поэтому
+публичный домен не входил в список Sanctum. Указать `APP_URL=https://anyapizza.ru`.
+Compose передаёт его PHP, а новый PHP-контейнер при запуске собирает
+`config:cache` из container environment. Изменение файла само по себе не меняет
+environment работающего контейнера. Пересборка Laravel config в старом контейнере
+прочитает его прежний environment. Применять изменение в штатном релизе.
+
+На TLS ingress сохранять публичный Host и **перезаписывать** схему клиентского
+запроса, например в HTTPS location host Nginx:
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+Контейнерный Nginx передаёт запрос PHP по FastCGI. Сверить фактический
+`$remote_addr` контейнерного Nginx для запроса через ingress. При loopback
+publish он может быть адресом Docker gateway. Указать проверенный адрес в
+`TRUSTED_PROXY_IP`; Laravel доверяет от него только `X-Forwarded-Proto`.
+Сохранить loopback bind и ограничить прямой доступ к внутреннему listener.
+Если ingress не перезаписывает заголовок, сначала исправить ingress.
+Оставить `TRUSTED_PROXY_IP` пустым для прямого HTTP/локальной разработки.
+
+При включённом access log отправить публичный `GET /up?release-probe=<метка>`
+с уникальной меткой и найти эту же запись через `docker logs --since 2m "$NGINX_CID"`
+контейнерного Nginx. В стандартном access log первое поле — `$remote_addr`.
+Сверить его с фактическим маршрутом от TLS ingress. При недоступном access log
+подтвердить адрес средствами диагностики ingress в согласованном окне.
+
+После релиза сверить в PHP эффективные `app.url`, наличие публичного host в
+`sanctum.stateful` и адрес в `trustedproxy.proxies`. Не печатать конфигурацию
+целиком. Проверить публичный HTTPS ответ каталога, включая `links.first` и
+`meta.path`, и гостевой запрос с настоящим origin сайта:
+
+```sh
+curl -q -sS -o /dev/null -w '%{http_code}\n' \
+  -H 'Accept: application/json' -H 'X-Pizza-Client: spa' \
+  -H 'Referer: https://anyapizza.ru/' https://anyapizza.ru/api/me
+```
+
+Для запроса без cookie ожидается `401`. `403` означает отказ браузерной проверки до проверки
+гостевой сессии. Дополнительно сверить `200` у `/`, загруженных SPA assets,
+`/up` и `/api/products?page=1`. Пустой `data` допустим. Запрос `/api/me` со SPA-маркером
+и только чужим `Origin` должен вернуть `403`. `GET /api/cart` без cookie и bearer
+должен вернуть `401`. Здоровые внутренние сервисы не подтверждают эти внешние проверки.
+
+Отдельно проверить в чистом браузерном профиле, что каталог открывается гостем
+без ошибки сессии. При наличии товара его добавление и изменение количества
+остаются локальными и переживают обновление страницы. Оформление должно открыть
+вход. Перенос в аккаунт и отправка заказа меняют данные, выполняйте их на
+изолированном стенде либо в рамках отдельно согласованного сценария.
 
 ### Проверка браузерной авторизации через публичный HTTPS
 
@@ -1071,16 +1137,26 @@ release-код на выбранных images, не происхождение i
 
 ## Локальный gate и проверки на будущем сервере
 
-Полный локальный release gate (нужны уже имеющиеся локальные tooling images):
+Локальный прогон с Docker backup/runtime (нужны уже имеющиеся tooling images).
+Bootstrap/recovery приложения, RabbitMQ, MinIO images и worker fixtures включаются
+отдельными флагами, перечисленными в соответствующих разделах.
 
 ```sh
 BACKUP_DOCKER_TEST=1 RELEASE_RUNTIME_DOCKER_TEST=1 \
   node --test --test-concurrency=1 docker/release/*.test.mjs
 ```
 
+Для проверок завершения worker и scheduler в Docker использовать локальный
+immutable PHP image ID (в формате `sha256:…`):
+
+```sh
+BACKGROUND_TEST_IMAGE="$LOCAL_PHP_IMAGE_ID" QUEUE_WORKER_TEST_IMAGE="$LOCAL_PHP_IMAGE_ID" \
+  node --test --test-concurrency=1 docker/release/background.test.mjs docker/release/queue-worker-image.test.mjs
+```
+
 Дополнительно: PHPStan, PHP-CS-Fixer/Rector dry-run, Composer validate, Compose config,
 Laravel suites в изолированных сервисах, frontend npm test/build и production HTTP
-checks. CI job release-checks запускает четырнадцать daemon-free test-файлов (bootstrap, state/manifest,
+checks. CI job release-checks запускает пятнадцать daemon-free test-файлов (bootstrap, state/manifest,
 backup evidence, coordinator, continue, recovery intent/failures и fake MinIO), а также
 JS/shell syntax. Published-manifest и `docker/minio/ci.test.mjs` проверяются frontend job; release PHP helpers
 и scheduler проходят php -l в phpstan job. Node 24 Alpine job требует APK util-linux

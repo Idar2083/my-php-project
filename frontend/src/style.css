@@ -64,3 +64,13 @@ input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid 
   .cart-item form { width: 100%; }
   .order-row button { width: 100%; }
 }
+
+.shop-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; }
+.shop-nav { margin-top: 0; }
+.account-name { max-width: 100%; overflow-wrap: anywhere; }
+.auth-switch, .product-details { margin-top: 14px; }
+.product-details summary { cursor: pointer; color: #315934; }
+.product-details summary:focus-visible { outline: 3px solid #b35c27; outline-offset: 3px; }
+@media (max-width: 560px) {
+  .shop-nav { width: 100%; gap: 6px; }
+}

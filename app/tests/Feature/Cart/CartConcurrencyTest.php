@@ -47,6 +47,24 @@ class CartConcurrencyTest extends TestCase
         );
     }
 
+    public function test_parallel_imports_keep_the_largest_quantity(): void
+    {
+        $product = $this->createProduct('Import pizza');
+        [$first, $second] = $this->runConcurrently(
+            $this->createProcess($product, 3, import: true),
+            $this->createProcess($product, 5, import: true),
+        );
+
+        $this->assertTrue($first->isSuccessful(), $first->getErrorOutput());
+        $this->assertTrue($second->isSuccessful(), $second->getErrorOutput());
+        $this->assertDatabaseCount('cart_items', 1);
+        $this->assertDatabaseHas('cart_items', [
+            'cart_id' => $this->cart->id,
+            'product_id' => $product->id,
+            'quantity' => 5,
+        ]);
+    }
+
     public function test_parallel_additions_cannot_exceed_pizza_limit(): void
     {
         $product = $this->createProduct('Pepperoni');
@@ -165,6 +183,7 @@ class CartConcurrencyTest extends TestCase
     private function createProcess(
         Product $product,
         int $quantity,
+        bool $import = false,
     ): Process {
         $process = new Process([
             PHP_BINARY,
@@ -172,6 +191,7 @@ class CartConcurrencyTest extends TestCase
             (string) $this->user->id,
             (string) $product->id,
             (string) $quantity,
+            $import ? 'import' : 'add',
         ]);
         $process->setInput(json_encode(['database' => config('database.connections.pgsql')], JSON_THROW_ON_ERROR));
 

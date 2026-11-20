@@ -29,6 +29,8 @@ return Application::configure(basePath: dirname(__DIR__))
         require __DIR__ . '/../routes/console.php';
     })
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->trustProxies(headers: Request::HEADER_X_FORWARDED_PROTO);
+
         $middleware->api(
             prepend: [
                 BrowserSession::class,

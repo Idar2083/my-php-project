@@ -1,8 +1,8 @@
 <script setup>
 import { inject, onBeforeUnmount, reactive, ref } from 'vue'
 import RequestError from './RequestError.vue'
-const props = defineProps({ register: Boolean })
-const emit = defineEmits(['authenticated', 'busy'])
+const props = defineProps({ register: Boolean, checkout: Boolean })
+const emit = defineEmits(['authenticated', 'busy', 'switch'])
 const api = inject('api')
 const fields = reactive({ name: '', email: '', password: '' })
 let active = true
@@ -33,7 +33,7 @@ async function submit() {
 <template>
   <section class="panel narrow">
     <h1>{{ register ? 'Регистрация' : 'Вход' }}</h1>
-    <p>Корзина и заказы доступны после входа.</p>
+    <p v-if="checkout" role="status">Войдите или зарегистрируйтесь, чтобы оформить заказ. Товары останутся в корзине.</p>
     <RequestError :error="error" />
     <form @submit.prevent="submit" :aria-busy="busy">
       <fieldset :disabled="busy">
@@ -44,5 +44,8 @@ async function submit() {
         <button type="submit">{{ busy ? 'Подождите…' : register ? 'Создать аккаунт' : 'Войти' }}</button>
       </fieldset>
     </form>
+    <button type="button" class="secondary auth-switch" :disabled="busy" @click="emit('switch')">
+      {{ register ? 'Уже есть аккаунт? Войти' : 'Зарегистрироваться' }}
+    </button>
   </section>
 </template>

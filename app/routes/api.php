@@ -52,6 +52,7 @@ Route::middleware(['auth.api'])->group(function (): void {
 
     Route::prefix('cart')->group(static function (): void {
         Route::get('/', [CartController::class, 'show']);
+        Route::post('/import', [CartController::class, 'import']);
         Route::post('/items', [CartController::class, 'store']);
         Route::put('/items/{itemId}', [CartController::class, 'update']);
         Route::delete('/items/{itemId}', [CartController::class, 'destroy']);

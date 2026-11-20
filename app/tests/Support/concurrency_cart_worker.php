@@ -35,11 +35,14 @@ try {
     /** @var CartService $cartService */
     $cartService = $app->make(CartService::class);
 
-    $cartService->addItem(
-        $user,
-        (int) $argv[2],
-        (int) $argv[3],
-    );
+    $productId = (int) $argv[2];
+    $quantity = (int) $argv[3];
+
+    if ($argv[4] === 'import') {
+        $cartService->importItems($user, [['product_id' => $productId, 'quantity' => $quantity]]);
+    } else {
+        $cartService->addItem($user, $productId, $quantity);
+    }
 
     exit(0);
 } catch (Throwable $exception) {
