@@ -9,12 +9,13 @@ include .env.local
 export
 endif
 
-.PHONY: up down logs bash composer-install jwt-secret
+.PHONY: up down logs bash composer-install openapi jwt-secret
 
 up:
 	docker compose --env-file .env --env-file .env.local \
     		up -d --build --remove-orphans
 	$(MAKE) composer-install
+	$(MAKE) openapi
 	docker compose --env-file .env --env-file .env.local \
 		--profile frontend up -d --build --wait frontend
 	@echo "Frontend is available at: http://localhost:$${FRONTEND_PORT:-5173}/"
@@ -31,6 +32,9 @@ bash:
 
 composer-install:
 	docker compose exec -T php sh -lc 'mkdir -p vendor && composer install --no-interaction --prefer-dist'
+
+openapi:
+	docker compose exec -T php composer openapi
 
 jwt-secret:
 	docker compose exec -T php php artisan jwt:secret --force

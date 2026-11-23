@@ -158,6 +158,7 @@ tests:
     - php "$CI_PROJECT_DIR/docker/ci/wait-services.php"
     - php artisan migrate --force
     - php artisan reports:rabbitmq:setup
+    - composer openapi
     - mkdir -p "$CI_PROJECT_DIR/reports"
     - php artisan test --log-junit="$CI_PROJECT_DIR/reports/phpunit.xml"
   artifacts:

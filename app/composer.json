@@ -7,6 +7,7 @@
     "license": "MIT",
     "require": {
         "php": "^8.3.0",
+        "darkaonline/l5-swagger": "^11.1",
         "laravel/framework": "^13.0",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^3.0",
@@ -41,6 +42,10 @@
         }
     },
     "scripts": {
+        "openapi": [
+            "@php artisan l5-swagger:generate",
+            "@php artisan openapi:check"
+        ],
         "setup": [
             "composer install",
             "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
