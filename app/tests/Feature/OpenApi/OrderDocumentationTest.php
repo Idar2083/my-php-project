@@ -43,7 +43,10 @@ final class OrderDocumentationTest extends TestCase
             $this->assertTrue($request['properties'][$field]['nullable']);
             $this->assertTrue($schemas['OrderAddress']['properties'][$field]['nullable']);
         }
-        $this->assertArrayNotHasKey('enum', $request['properties']['delivery_method']);
+        $this->assertSame(['delivery', 'pickup', 'courier'], $request['properties']['delivery_method']['enum']);
+        $this->assertSame($request['properties']['delivery_method']['enum'], $schemas['CreatedOrder']['properties']['delivery_method']['enum']);
+        $this->assertContains('product_name', $schemas['OrderItem']['required']);
+        $this->assertSame('string', $schemas['OrderItem']['properties']['product_name']['type']);
         $this->assertArrayNotHasKey('maxLength', $request['properties']['delivery_method']);
         $this->assertSame('#/components/schemas/Product', $schemas['OrderItem']['properties']['product']['$ref']);
         $this->assertSame('string', $schemas['OrderItem']['properties']['price']['type']);
@@ -69,18 +72,29 @@ final class OrderDocumentationTest extends TestCase
             ->assertExactJson($operation['responses']['422']['content']['application/json']['examples']['emptyCart']['value']);
     }
 
-    public function test_optional_address_fields_and_unrestricted_delivery_method(): void
+    public function test_optional_address_fields_and_supported_delivery_method(): void
     {
         $this->cart(30);
         $request = $this->request();
         unset($request['entrance'], $request['apartment']);
-        $request['delivery_method'] = 'custom-method';
+        $request['delivery_method'] = 'pickup';
         $request['total_price'] = 1;
         $request['items'] = [];
         $this->postJson('/api/orders', $request)->assertCreated()
             ->assertJsonPath('data.address.entrance', null)->assertJsonPath('data.address.apartment', null)
-            ->assertJsonPath('data.delivery_method', 'custom-method')->assertJsonPath('data.total_price', '15000.00')
+            ->assertJsonPath('data.delivery_method', 'pickup')->assertJsonPath('data.total_price', '15000.00')
             ->assertJsonPath('data.items.0.quantity', 30);
+    }
+
+    public function test_unsupported_delivery_method_matches_documented_error(): void
+    {
+        $this->cart(2);
+        $operation = $this->document()['paths']['/api/orders']['post'];
+        $expected = $operation['responses']['422']['content']['application/json']['examples']['invalidDeliveryMethod']['value'];
+        $this->postJson('/api/orders', array_replace($this->request(), ['delivery_method' => 'custom-method']))
+            ->assertUnprocessable()->assertExactJson($expected);
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertDatabaseCount('cart_items', 1);
     }
 
     public function test_summed_quantity_limit_example_matches_http_response(): void
