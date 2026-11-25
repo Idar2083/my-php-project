@@ -11,6 +11,7 @@ use App\Modules\Order\Domain\Models\DTO\AddressDto;
 use App\Modules\Order\Domain\Models\Order;
 use App\Modules\Order\Domain\Models\OrderItem;
 use App\Shared\Application\Exceptions\TranslatableException;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -53,6 +54,10 @@ class OrderService
                 $totalPrice += (float) $item->product->price * $item->quantity;
             }
 
+            if ($totalPrice > 99_999_999.99) {
+                throw ValidationException::withMessages(['cart' => ['Order total exceeds the supported amount.']]);
+            }
+
             $order = Order::query()->create([
                 'user_id' => $user->id,
                 'status' => OrderStatus::CREATED,
@@ -84,15 +89,18 @@ class OrderService
     }
 
     /**
-     * @return Collection<int, Order>
+     * @return Collection<int, Order>|LengthAwarePaginator<int, Order>
      */
-    public function getOrders(User $user): Collection
+    public function getOrders(User $user, ?int $page = null): Collection|LengthAwarePaginator
     {
-        return Order::query()
+        $query = Order::query()
             ->where('user_id', $user->id)
             ->with('items.product')
             ->latest()
-            ->get();
+            ->orderByDesc('id');
+
+        // Explicit pagination is opt-in; preserve the legacy unpaginated response.
+        return $page === null ? $query->get() : $query->paginate(perPage: 30, page: $page);
     }
 
     public function getOrder(User $user, int $orderId): Order
@@ -101,6 +109,20 @@ class OrderService
             ->where('user_id', $user->id)
             ->with('items.product')
             ->findOrFail($orderId);
+    }
+
+    /**
+     * @return LengthAwarePaginator<int, Order>
+     */
+    public function getAdminOrders(int $page): LengthAwarePaginator
+    {
+        return Order::query()->with(['user:id,name,email', 'items.product'])
+            ->orderByDesc('id')->paginate(perPage: 30, page: $page);
+    }
+
+    public function getAdminOrder(int $orderId): Order
+    {
+        return Order::query()->with(['user:id,name,email', 'items.product'])->findOrFail($orderId);
     }
 
     public function updateStatus(

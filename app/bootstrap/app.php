@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 use App\Http\Middleware\SetLocale;
 use App\Modules\Auth\Presentation\Middleware\AdminMiddleware;
+use App\Modules\Auth\Presentation\Middleware\AuthenticateApi;
+use App\Modules\Auth\Presentation\Middleware\BrowserSession;
 use App\Shared\Application\Exceptions\TranslatableException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Foundation\Application;
@@ -19,6 +21,7 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withCommands([
+        __DIR__ . '/../app/Modules/Auth/Infrastructure/Console',
         __DIR__ . '/../app/Modules/Report/Infrastructure/Messaging/Console',
         __DIR__ . '/../app/Shared/Infrastructure/Outbox/Console',
     ])
@@ -26,13 +29,23 @@ return Application::configure(basePath: dirname(__DIR__))
         require __DIR__ . '/../routes/console.php';
     })
     ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->trustProxies(headers: Request::HEADER_X_FORWARDED_PROTO);
+
         $middleware->api(
             prepend: [
+                BrowserSession::class,
                 SetLocale::class,
+                \App\Http\Middleware\ValidateRouteIdentifiers::class,
             ],
         );
 
+        $middleware->prependToPriorityList(
+            \Illuminate\Routing\Middleware\SubstituteBindings::class,
+            \App\Http\Middleware\ValidateRouteIdentifiers::class,
+        );
+
         $middleware->alias([
+            'auth.api' => AuthenticateApi::class,
             'admin' => AdminMiddleware::class,
         ]);
     })

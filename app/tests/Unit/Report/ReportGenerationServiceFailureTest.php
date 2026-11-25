@@ -20,7 +20,7 @@ final class ReportGenerationServiceFailureTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_storage_failure_marks_report_as_failed(): void
+    public function test_storage_failure_leaves_report_pending_for_retry(): void
     {
         $report = Report::query()->create([
             'status' => ReportStatus::PROCESSING,
@@ -62,12 +62,12 @@ final class ReportGenerationServiceFailureTest extends TestCase
             $report->refresh();
 
             $this->assertSame(
-                ReportStatus::FAILED,
+                ReportStatus::PENDING,
                 $report->status,
             );
 
             $this->assertSame(
-                'MinIO is unavailable.',
+                'Report generation failed.',
                 $report->error,
             );
 

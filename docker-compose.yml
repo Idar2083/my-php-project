@@ -1,4 +1,28 @@
 services:
+  frontend:
+    profiles: [frontend]
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+      API_PROXY_TARGET: http://nginx
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend/src:/app/src:ro
+      - ./frontend/index.html:/app/index.html:ro
+    depends_on:
+      nginx:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   php:
     build:
       context: .
@@ -126,7 +150,7 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:-pizza-infra/minio-community:RELEASE.2025-10-15T17-29-55Z}
     restart: unless-stopped
     command: server /data --console-address ":9001"
     ports:
@@ -145,7 +169,7 @@ services:
       start_period: 10s
 
   minio-init:
-    image: minio/mc:latest
+    image: ${MINIO_MC_IMAGE:-pizza-infra/mc-community:RELEASE.2025-08-13T08-35-41Z}
     restart: "no"
     depends_on:
       minio:

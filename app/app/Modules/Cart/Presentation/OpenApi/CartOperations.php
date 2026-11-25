@@ -9,7 +9,7 @@ use OpenApi\Attributes as OA;
 #[OA\Post(
     path: '/api/cart/items',
     operationId: 'addCartItem',
-    description: 'Adds to the authenticated user cart and returns the entire cart. Repeating the request increases the existing item quantity, so this operation is not idempotent. Category totals across all products are limited to 10 pizza items and 20 drink items. Categories are case-sensitive: only pizza and drink are supported. Send Accept: application/json for JSON error responses. Accept-Language selects English or Russian error messages; examples use English.',
+    description: 'Adds to the authenticated user cart and returns the entire cart. Repeating the request increases the existing item quantity, so this operation is not idempotent. Category totals across all products are limited to 10 pizza items and 20 drink items. Product categories are matched case-insensitively after trimming spaces. Only pizza and drink are supported. Send Accept: application/json for JSON error responses. Accept-Language selects English or Russian error messages; examples use English.',
     summary: 'Add a product to the cart',
     security: [['bearerAuth' => []]],
     requestBody: new OA\RequestBody(

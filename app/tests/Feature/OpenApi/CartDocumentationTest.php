@@ -119,8 +119,19 @@ final class CartDocumentationTest extends TestCase
             'pizza limit' => ['pizza', 11, 'pizzaLimit'],
             'drink limit' => ['drink', 21, 'drinkLimit'],
             'unsupported category' => ['dessert', 1, 'unsupportedCategory'],
-            'case-sensitive category' => ['Pizza', 1, 'unsupportedCategory'],
         ];
+    }
+
+    public function test_mixed_case_pizza_category_is_accepted_and_counts_towards_the_limit(): void
+    {
+        $this->authenticate();
+        $product = Product::factory()->create(['category' => 'Pizza']);
+        $lowercaseProduct = Product::factory()->create(['category' => 'pizza']);
+
+        $this->postJson('/api/cart/items', ['product_id' => $product->id, 'quantity' => 10])
+            ->assertOk()->assertJsonPath('data.items.0.quantity', 10);
+        $this->postJson('/api/cart/items', ['product_id' => $lowercaseProduct->id, 'quantity' => 1])
+            ->assertUnprocessable()->assertJsonValidationErrors('quantity');
     }
 
     public function test_category_totals_are_shared_across_different_products(): void

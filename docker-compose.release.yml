@@ -1,0 +1,24 @@
+# Apply after docker-compose.yml and docker-compose.prod.yml.
+# Image references must come from a validated release manifest.
+services:
+  frontend: !reset null
+
+  php:
+    build: !reset null
+    image: ${PHP_IMAGE:?Set PHP_IMAGE from the release manifest}
+
+  report-worker:
+    build: !reset null
+    image: ${PHP_IMAGE:?Set PHP_IMAGE from the release manifest}
+
+  outbox-worker:
+    build: !reset null
+    image: ${PHP_IMAGE:?Set PHP_IMAGE from the release manifest}
+
+  report-scheduler:
+    build: !reset null
+    image: ${PHP_IMAGE:?Set PHP_IMAGE from the release manifest}
+
+  nginx:
+    build: !reset null
+    image: ${NGINX_IMAGE:?Set NGINX_IMAGE from the release manifest}

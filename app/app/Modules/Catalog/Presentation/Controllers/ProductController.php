@@ -23,6 +23,8 @@ class ProductController extends Controller
 
     public function index(Request $request): AnonymousResourceCollection
     {
+        $request->validate(['page' => ['sometimes', 'integer', 'min:1', 'max:1000000']]);
+
         return ProductResource::collection(
             $this->productService->paginate(
                 page: $request->integer('page', 1),

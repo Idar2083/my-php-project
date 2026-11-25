@@ -7,9 +7,9 @@ namespace App\Modules\Auth\Presentation\Controllers;
 use App\Http\Controllers\Controller;
 use App\Modules\Auth\Application\Handlers\ChangeUserRoleHandler;
 use App\Modules\Auth\Domain\Models\User;
-use App\Modules\Auth\Presentation\Requests\IndexUsersRequest;
-use App\Modules\Auth\Presentation\Requests\UpdateUserRoleRequest;
 use App\Modules\Auth\Presentation\Resources\AdminUserResource;
+use App\Modules\Auth\Presentation\Resources\Requests\IndexUsersRequest;
+use App\Modules\Auth\Presentation\Resources\Requests\UpdateUserRoleRequest;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Symfony\Component\HttpFoundation\Response;
@@ -55,7 +55,7 @@ final class AdminUserController extends Controller
         }
 
         /** @var User $actor */
-        $actor = $request->user('api');
+        $actor = $request->user();
 
         return new AdminUserResource(
             $this->changeUserRoleHandler->handle(

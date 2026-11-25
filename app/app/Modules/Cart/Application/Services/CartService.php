@@ -7,16 +7,14 @@ namespace App\Modules\Cart\Application\Services;
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Domain\Models\Cart;
 use App\Modules\Cart\Domain\Models\CartItem;
+use App\Modules\Catalog\Domain\Enums\ProductCategory;
 use App\Modules\Catalog\Domain\Models\Product;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CartService
 {
     private const int TRANSACTION_ATTEMPTS = 3;
-
-    private const string POSTGRES_UNIQUE_VIOLATION = '23505';
 
     public function getCart(User $user): Cart
     {
@@ -34,33 +32,20 @@ class CartService
         return DB::transaction(function () use ($user, $productId, $quantity): Cart {
             $cart = $this->getOrCreateCart($user);
 
-            $product = Product::query()->findOrFail($productId);
+            $this->saveItem($cart, $productId, $quantity, additive: true);
 
-            $item = CartItem::query()
-                ->where('cart_id', $cart->id)
-                ->where('product_id', $product->id)
-                ->lockForUpdate()
-                ->first();
+            return $cart->load('items.product');
+        }, self::TRANSACTION_ATTEMPTS);
+    }
 
-            $newQuantity = ($item === null ? 0 : (int) $item->quantity) + $quantity;
+    /** @param list<array{product_id: int|numeric-string, quantity: int|numeric-string}> $items */
+    public function importItems(User $user, array $items): Cart
+    {
+        return DB::transaction(function () use ($user, $items): Cart {
+            $cart = $this->getOrCreateCart($user);
 
-            $this->validateCategoryLimit(
-                $cart,
-                $product,
-                $newQuantity,
-                $item?->id,
-            );
-
-            if ($item === null) {
-                CartItem::query()->create([
-                    'cart_id' => $cart->id,
-                    'product_id' => $product->id,
-                    'quantity' => $newQuantity,
-                ]);
-            } else {
-                $item->update([
-                    'quantity' => $newQuantity,
-                ]);
+            foreach ($items as $item) {
+                $this->saveItem($cart, (int) $item['product_id'], (int) $item['quantity'], additive: false);
             }
 
             return $cart->load('items.product');
@@ -134,6 +119,41 @@ class CartService
         }, self::TRANSACTION_ATTEMPTS);
     }
 
+    private function saveItem(Cart $cart, int $productId, int $quantity, bool $additive): void
+    {
+        // Keep a catalog update or delete from changing this line during the cart write.
+        $product = Product::query()->sharedLock()->findOrFail($productId);
+
+        $item = CartItem::query()
+            ->where('cart_id', $cart->id)
+            ->where('product_id', $product->id)
+            ->lockForUpdate()
+            ->first();
+
+        $currentQuantity = $item === null ? 0 : (int) $item->quantity;
+        // Import is a minimum target so a retry after a lost response does not add twice.
+        $newQuantity = $additive ? $currentQuantity + $quantity : max($currentQuantity, $quantity);
+
+        $this->validateCategoryLimit(
+            $cart,
+            $product,
+            $newQuantity,
+            $item?->id,
+        );
+
+        if ($item === null) {
+            CartItem::query()->create([
+                'cart_id' => $cart->id,
+                'product_id' => $product->id,
+                'quantity' => $newQuantity,
+            ]);
+        } else {
+            $item->update([
+                'quantity' => $newQuantity,
+            ]);
+        }
+    }
+
     private function getOrCreateCart(User $user): Cart
     {
         $cart = Cart::query()
@@ -147,19 +167,9 @@ class CartService
             return $cart;
         }
 
-        try {
-            $cart = Cart::query()->create([
-                'user_id' => $user->id,
-            ]);
-
-            $cart->wasRecentlyCreated = false;
-
-            return $cart;
-        } catch (QueryException $exception) {
-            if ($exception->getCode() !== self::POSTGRES_UNIQUE_VIOLATION) {
-                throw $exception;
-            }
-        }
+        // Laravel creates inside a savepoint when already in a transaction.
+        // A competing insert can fail without aborting our outer transaction.
+        Cart::query()->createOrFirst(['user_id' => $user->id]);
 
         $cart = Cart::query()
             ->where('user_id', $user->id)
@@ -177,10 +187,11 @@ class CartService
         int $newQuantity,
         ?int $excludedItemId = null,
     ): void {
+        $category = ProductCategory::fromLabel($product->category);
         $query = CartItem::query()
             ->where('cart_id', $cart->id)
-            ->whereHas('product', static function ($query) use ($product): void {
-                $query->where('category', $product->category);
+            ->whereHas('product', static function ($query) use ($category): void {
+                $query->whereRaw('LOWER(TRIM(category)) = ?', [$category?->value]);
             });
 
         if ($excludedItemId !== null) {
@@ -190,9 +201,9 @@ class CartService
         $currentQuantity = (int) $query->sum('quantity');
         $totalQuantity = $currentQuantity + $newQuantity;
 
-        $limit = match ($product->category) {
-            'pizza' => Cart::MAX_PIZZAS,
-            'drink' => Cart::MAX_DRINKS,
+        $limit = match ($category) {
+            ProductCategory::PIZZA => Cart::MAX_PIZZAS,
+            ProductCategory::DRINK => Cart::MAX_DRINKS,
             default => throw ValidationException::withMessages([
                 'product_id' => [
                     __('api.cart.unsupported_category'),

@@ -1,0 +1,53 @@
+import { afterEach, expect, it, vi } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
+import AuthForm from '../src/components/AuthForm.vue'
+import { ApiError } from '../src/api/client.js'
+let wrapper
+afterEach(() => wrapper?.unmount())
+function render(register, api) { wrapper = mount(AuthForm, { props: { register }, global: { provide: { api } } }) }
+
+it('uses server password validation and associates the error with the field', async () => {
+  const request = vi.fn().mockRejectedValue(new ApiError(422, ['Слабый пароль.'], { password: ['Слабый пароль.'] }))
+  render(true, { request })
+  await wrapper.get('[name=password]').setValue('Кириллица9!')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(request.mock.lastCall[1].body.password).toBe('Кириллица9!')
+  expect(wrapper.get('[name=password]').attributes('aria-describedby')).toBe('auth-password')
+  expect(wrapper.get('#auth-password').text()).toContain('Слабый пароль')
+})
+
+it('registers using exactly name/email/password and uses the session profile', async () => {
+  const user = { id: 3, name: 'Buyer', role: 'user' }
+  const request = vi.fn().mockResolvedValueOnce(user)
+  render(true, { request })
+  await wrapper.get('[name=name]').setValue('Buyer')
+  await wrapper.get('[name=email]').setValue('buyer@example.test')
+  await wrapper.get('[name=password]').setValue('StrongPassword!123')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(request).toHaveBeenNthCalledWith(1, '/register', { method: 'POST', authenticated: false, body: { name: 'Buyer', email: 'buyer@example.test', password: 'StrongPassword!123' } })
+  expect(request).toHaveBeenCalledOnce()
+  expect(wrapper.emitted('authenticated')[0][0]).toEqual(user)
+  expect(wrapper.get('[name=password]').element.value).toBe('')
+})
+
+it.each([401, 422, 429, 500])('shows a safe login error %s and clears the password', async status => {
+  const request = vi.fn().mockRejectedValue(new ApiError(status, status === 422 ? ['Email уже занят.'] : []))
+  render(false, { request })
+  await wrapper.get('[name=password]').setValue('StrongPassword!123')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(wrapper.find('[role=alert]').exists()).toBe(true)
+  expect(wrapper.emitted('authenticated')).toBeUndefined()
+  expect(wrapper.get('[name=password]').element.value).toBe('')
+})
+
+it('keeps duplicate sign-in submissions blocked until the server returns the session profile', async () => {
+  let reject
+  const request = vi.fn().mockImplementationOnce(() => new Promise((resolve, fail) => { reject = fail }))
+  render(false, { request })
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  await wrapper.get('form').trigger('submit')
+  expect(request).toHaveBeenCalledOnce()
+  expect(wrapper.get('fieldset').attributes('disabled')).toBeDefined()
+  reject(new ApiError(401)); await flushPromises()
+  expect(wrapper.emitted('authenticated')).toBeUndefined()
+})

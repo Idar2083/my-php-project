@@ -17,7 +17,7 @@ use OpenApi\Attributes as OA;
         new OA\Property(property: 'postal_code', type: 'string', maxLength: 255, minLength: 1),
         new OA\Property(property: 'entrance', type: 'string', nullable: true, maxLength: 255),
         new OA\Property(property: 'apartment', type: 'string', nullable: true, maxLength: 255),
-        new OA\Property(property: 'delivery_method', description: 'Required string; no enum or maximum length is validated by StoreOrderRequest.', type: 'string', minLength: 1),
+        new OA\Property(property: 'delivery_method', type: 'string', minLength: 1, enum: ['delivery', 'pickup', 'courier']),
     ],
     type: 'object',
 )]
@@ -37,10 +37,11 @@ use OpenApi\Attributes as OA;
 )]
 #[OA\Schema(
     schema: 'OrderItem',
-    required: ['id', 'product_id', 'quantity', 'price', 'product'],
+    required: ['id', 'product_id', 'product_name', 'quantity', 'price', 'product'],
     properties: [
         new OA\Property(property: 'id', type: 'integer'),
         new OA\Property(property: 'product_id', type: 'integer'),
+        new OA\Property(property: 'product_name', description: 'Product name at the time the order was placed.', type: 'string', example: 'Pepperoni'),
         new OA\Property(property: 'quantity', type: 'integer'),
         new OA\Property(property: 'price', description: 'Server-side unit price snapshot, decimal serialized as a string with two decimal places.', type: 'string', example: '500.00'),
         new OA\Property(property: 'product', ref: '#/components/schemas/Product'),
@@ -54,7 +55,7 @@ use OpenApi\Attributes as OA;
         new OA\Property(property: 'id', type: 'integer'),
         new OA\Property(property: 'status', description: 'Initial status returned by this creation operation.', type: 'string', enum: ['created']),
         new OA\Property(property: 'total_price', description: 'Server-calculated sum of unit price times quantity; decimal serialized as a string with two decimal places.', type: 'string', example: '1000.00'),
-        new OA\Property(property: 'delivery_method', type: 'string'),
+        new OA\Property(property: 'delivery_method', type: 'string', enum: ['delivery', 'pickup', 'courier']),
         new OA\Property(property: 'address', ref: '#/components/schemas/OrderAddress'),
         new OA\Property(property: 'items', type: 'array', items: new OA\Items(ref: '#/components/schemas/OrderItem')),
         new OA\Property(property: 'created_at', type: 'string', format: 'date-time'),

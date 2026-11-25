@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Shared\Infrastructure\Outbox\Repositories;
 
+use App\Modules\Report\Application\Exceptions\RetryableReportPublicationException;
 use App\Shared\Application\Outbox\Contracts\OutboxEventRepository;
 use App\Shared\Infrastructure\Outbox\Models\OutboxEvent;
 use Illuminate\Support\Facades\DB;
@@ -101,7 +102,7 @@ final class DatabaseOutboxEventRepository implements OutboxEventRepository
             ->update([
                 'attempts' => $attempts,
                 'last_error' => $exception->getMessage(),
-                'failed_at' => $attempts >= self::MAX_ATTEMPTS
+                'failed_at' => $attempts >= self::MAX_ATTEMPTS && !$exception instanceof RetryableReportPublicationException
                     ? now()
                     : null,
                 'processing_at' => null,

@@ -116,6 +116,26 @@ final class CreateOrderTest extends TestCase
         $this->assertDatabaseCount('orders', 0);
     }
 
+    public function test_total_overflow_is_rejected_without_consuming_cart(): void
+    {
+        $this->addProductToCart(quantity: 5, price: 21_474_836);
+        $this->createOrder()->assertUnprocessable()->assertJsonValidationErrors('cart');
+        $this->assertDatabaseCount('orders', 0);
+        $this->assertDatabaseCount('cart_items', 1);
+    }
+
+    public function test_client_cannot_override_order_owner_price_or_status(): void
+    {
+        $this->addProductToCart(quantity: 2, price: 500);
+        $other = User::factory()->create();
+        $this->postJson('/api/orders', array_merge($this->address(), [
+            'user_id' => $other->id, 'total_price' => 0, 'status' => 'paid',
+            'items' => [['price' => 0, 'quantity' => 100]],
+        ]))->assertCreated()->assertJsonPath('data.status', 'created');
+        $this->assertDatabaseHas('orders', ['user_id' => $this->user->id, 'total_price' => 1_000, 'status' => 'created']);
+        $this->assertDatabaseHas('order_items', ['price' => 500, 'quantity' => 2]);
+    }
+
     protected function setUp(): void
     {
         parent::setUp();

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Tests\Feature\Report;
 
 use App\Modules\Auth\Domain\Models\User;
-use App\Modules\Report\Application\Jobs\GenerateReportJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\HttpFoundation\Response;
@@ -53,10 +52,11 @@ final class CreateReportTest extends TestCase
             ],
         );
 
-        Queue::assertPushed(
-            GenerateReportJob::class,
-            1,
-        );
+        Queue::assertNothingPushed();
+        $this->assertDatabaseHas('outbox_events', ['event_type' => 'reports.requested', 'published_at' => null]);
+        $event = \DB::table('outbox_events')->where('event_type', 'reports.requested')->first();
+        $this->assertNotNull($event);
+        $this->assertSame($reportId, json_decode($event->payload, true, 512, JSON_THROW_ON_ERROR)['report_id']);
     }
 
     public function test_cannot_create_report_without_date_from(): void

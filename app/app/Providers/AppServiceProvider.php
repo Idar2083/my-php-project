@@ -8,11 +8,15 @@ use App\Modules\Auth\Application\Contracts\WelcomeEmailSender;
 use App\Modules\Auth\Application\Listeners\SendWelcomeEmail;
 use App\Modules\Auth\Domain\Events\UserRegisteredEvent;
 use App\Modules\Auth\Infrastructure\Mail\WelcomeEmailStub;
+use App\Modules\Auth\Infrastructure\Session\DatabaseSessionHandler;
+use App\Modules\Auth\Presentation\Middleware\StartSession;
 use App\Modules\Catalog\Domain\Models\Product;
 use App\Modules\Catalog\Presentation\Observers\ProductObserver;
 use App\Modules\Report\Application\Contracts\ReportCompletionPublisher;
 use App\Modules\Report\Application\Contracts\ReportOrderItemReader;
 use App\Modules\Report\Application\Contracts\ReportStorage;
+use App\Modules\Report\Domain\Events\ReportRequestedEvent;
+use App\Modules\Report\Infrastructure\Messaging\PublishReportJob;
 use App\Modules\Report\Infrastructure\Messaging\RabbitMqPublisher;
 use App\Modules\Report\Infrastructure\Persistence\ReportOrderItemQuery;
 use App\Modules\Report\Infrastructure\Storage\ReportStorage as InfrastructureReportStorage;
@@ -20,7 +24,16 @@ use App\Shared\Application\Outbox\Contracts\OutboxEventRepository;
 use App\Shared\Application\Outbox\Contracts\OutboxRepository;
 use App\Shared\Infrastructure\Outbox\Repositories\DatabaseOutboxEventRepository;
 use App\Shared\Infrastructure\Outbox\Repositories\DatabaseOutboxRepository;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Contracts\Cache\Factory as CacheFactory;
+use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Http\Request;
+use Illuminate\Session\Middleware\StartSession as LaravelStartSession;
+use Illuminate\Session\SessionManager;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Session;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -30,6 +43,11 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
+        $this->app->singleton(LaravelStartSession::class, static fn (Application $app): StartSession => new StartSession(
+            $app->make(SessionManager::class),
+            static fn (): CacheFactory => $app->make(CacheFactory::class),
+        ));
+
         $this->app->bind(
             ReportOrderItemReader::class,
             ReportOrderItemQuery::class,
@@ -66,7 +84,26 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        Session::extend('database', static fn (Application $app): DatabaseSessionHandler => new DatabaseSessionHandler(
+            DB::connection(config('session.connection')),
+            config('session.table'),
+            config('session.lifetime'),
+            $app,
+        ));
+
+        RateLimiter::for('login', static function (Request $request): array {
+            $email = $request->input('email');
+            $identity = is_string($email) ? mb_strtolower(trim($email)) : '';
+
+            return [
+                Limit::perMinute(30)->by('login-ip:' . $request->ip()),
+                Limit::perMinute(5)->by('login-account:' . hash('sha256', $identity . '|' . $request->ip())),
+            ];
+        });
+        RateLimiter::for('register', static fn (Request $request): Limit => Limit::perMinute(5)->by('register:' . $request->ip()));
+
         Product::observe(ProductObserver::class);
+        Event::listen(ReportRequestedEvent::class, PublishReportJob::class);
 
         Event::listen(
             UserRegisteredEvent::class,

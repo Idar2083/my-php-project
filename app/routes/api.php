@@ -6,19 +6,28 @@ use App\Modules\Auth\Presentation\Controllers\AdminUserController;
 use App\Modules\Auth\Presentation\Controllers\AuthController;
 use App\Modules\Cart\Presentation\Controllers\CartController;
 use App\Modules\Catalog\Presentation\Controllers\ProductController;
+use App\Modules\Order\Presentation\Controllers\AdminOrderController;
 use App\Modules\Order\Presentation\Controllers\OrderController;
 use App\Modules\Report\Presentation\Controllers\ReportController;
 use Illuminate\Support\Facades\Route;
+
+foreach (['id', 'itemId', 'orderId', 'report'] as $parameter) {
+    Route::pattern($parameter, '[1-9]\d*');
+}
 
 # Public routes
 Route::get('/products', [ProductController::class, 'index']);
 Route::get('/products/{id}', [ProductController::class, 'show']);
 
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
+Route::get('/csrf-cookie', [AuthController::class, 'csrfCookie']);
+Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:register');
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
 
 # Admin routes
-Route::middleware(['auth:api', 'admin'])->group(function (): void {
+Route::middleware(['auth.api', 'admin'])->group(function (): void {
+    Route::get('/admin/orders', [AdminOrderController::class, 'index']);
+    Route::get('/admin/orders/{orderId}', [AdminOrderController::class, 'show']);
+
     Route::get('/admin/users', [AdminUserController::class, 'index']);
     Route::patch('/admin/users/{userId}/role', [AdminUserController::class, 'updateRole'])
         ->whereNumber('userId');
@@ -37,12 +46,13 @@ Route::middleware(['auth:api', 'admin'])->group(function (): void {
 });
 
 # Authenticated routes
-Route::middleware(['auth:api'])->group(function (): void {
+Route::middleware(['auth.api'])->group(function (): void {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
 
     Route::prefix('cart')->group(static function (): void {
         Route::get('/', [CartController::class, 'show']);
+        Route::post('/import', [CartController::class, 'import']);
         Route::post('/items', [CartController::class, 'store']);
         Route::put('/items/{itemId}', [CartController::class, 'update']);
         Route::delete('/items/{itemId}', [CartController::class, 'destroy']);

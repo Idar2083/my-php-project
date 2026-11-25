@@ -7,6 +7,7 @@ namespace App\Modules\Cart\Presentation\Controllers;
 use App\Http\Controllers\Controller;
 use App\Modules\Auth\Domain\Models\User;
 use App\Modules\Cart\Application\Services\CartService;
+use App\Modules\Cart\Presentation\Requests\ImportCartRequest;
 use App\Modules\Cart\Presentation\Requests\StoreCartItemRequest;
 use App\Modules\Cart\Presentation\Requests\UpdateCartItemRequest;
 use App\Modules\Cart\Presentation\Resources\CartResource;
@@ -45,6 +46,21 @@ class CartController extends Controller
                 $validated['quantity'],
             ),
         );
+    }
+
+    public function import(ImportCartRequest $request): CartResource
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $expectedAccount = $request->header('X-Pizza-Import-Account');
+
+        abort_if($expectedAccount !== null && $expectedAccount !== (string) $user->getKey(), 409);
+
+        /** @var list<array{product_id: int|numeric-string, quantity: int|numeric-string}> $items */
+        $items = $request->validated('items');
+
+        return new CartResource($this->cartService->importItems($user, $items));
     }
 
     public function update(
