@@ -53,6 +53,10 @@ class CartController extends Controller
         /** @var User $user */
         $user = $request->user();
 
+        $expectedAccount = $request->header('X-Pizza-Import-Account');
+
+        abort_if($expectedAccount !== null && $expectedAccount !== (string) $user->getKey(), 409);
+
         /** @var list<array{product_id: int|numeric-string, quantity: int|numeric-string}> $items */
         $items = $request->validated('items');
 

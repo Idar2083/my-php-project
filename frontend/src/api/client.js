@@ -1,5 +1,5 @@
 export class ApiError extends Error {
-  constructor(status, errors = []) {
+  constructor(status, errors = [], fields = {}) {
     const messages = {
       401: 'Неверные данные входа или срок сессии истёк. Войдите снова.',
       403: 'Недостаточно прав для этого действия.',
@@ -12,6 +12,7 @@ export class ApiError extends Error {
     super(messages[status] || 'Сервис недоступен. Проверьте соединение и повторите попытку.')
     this.status = status
     this.errors = errors
+    this.fields = fields
   }
 }
 
@@ -24,12 +25,13 @@ export function createApi(onUnauthorized = () => {}, { browserSession = false } 
   const api = {
     reset() { token = null; generation++ },
     setToken(value) { token = value; generation++ },
-    async request(path, { method = 'GET', body, authenticated = true } = {}) {
+    async request(path, { method = 'GET', body, authenticated = true, importOwner } = {}) {
       const session = generation
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), 15000)
       const headers = { Accept: 'application/json', 'Accept-Language': 'ru' }
       if (browserSession) headers['X-Pizza-Client'] = 'spa'
+      if (importOwner !== undefined) headers['X-Pizza-Import-Account'] = String(importOwner)
       if (body !== undefined) headers['Content-Type'] = 'application/json'
       if (authenticated && token) headers.Authorization = `Bearer ${token}`
       try {
@@ -42,6 +44,7 @@ export function createApi(onUnauthorized = () => {}, { browserSession = false } 
           if (!csrf) throw new ApiError(419)
           headers['X-XSRF-TOKEN'] = decodeURIComponent(csrf)
         }
+        if (authenticated && session !== generation) throw new ApiError(401)
         const response = await fetch(`${base}${path}`, {
           method, headers, body: body === undefined ? undefined : JSON.stringify(body),
           signal: controller.signal, cache: 'no-store', redirect: browserSession ? 'error' : 'follow',
@@ -54,12 +57,14 @@ export function createApi(onUnauthorized = () => {}, { browserSession = false } 
             await api.request('/csrf-cookie', { authenticated: false })
           }
           let errors = []
+          let fields = {}
           if (response.status === 422) {
             const data = await response.json().catch(() => null)
-            errors = Object.values(data?.errors || {}).flat()
+            fields = Object.fromEntries(Object.entries(data?.errors || {}).slice(0, 30).map(([key, messages]) => [key, [messages].flat().filter(value => typeof value === 'string').slice(0, 4).map(value => value.slice(0, 300))]))
+            errors = Object.values(fields).flat()
               .filter(value => typeof value === 'string').slice(0, 12).map(value => value.slice(0, 300))
           }
-          throw new ApiError(response.status, errors)
+          throw new ApiError(response.status, errors, fields)
         }
         if (response.status === 204) return null
         const data = await response.json()

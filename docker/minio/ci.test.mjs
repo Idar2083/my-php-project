@@ -83,6 +83,7 @@ test('CI separates infrastructure contracts from independent checks and preserve
   assert.ok(job('minio-images').includes('    - sh docker/ci/check-minio-images.sh\n'))
   assert.ok(job('tests').includes('needs: [build, minio-images]'))
   for (const name of ['phpstan', 'php-cs-fixer', 'rector']) assert.ok(job(name).includes('needs: [build]'))
+  assert.doesNotMatch(job('frontend'), /^  variables:[ \t]*$/m, 'frontend must not declare null variables')
   for (const name of ['frontend', 'release-checks', 'production-config']) assert.ok(job(name).includes('needs: []'))
   for (const name of ['production-integration', 'publish-production', 'release-manifest', 'deploy-production']) {
     assert.ok(!/^  needs:/m.test(job(name)), `${name} must retain the stage barrier`)
@@ -146,3 +147,57 @@ if (args[0] === 'archive') fs.writeFileSync('reports/production-check.source.tar
     }
   } finally { fs.rmSync(folder, { recursive: true }) }
 })
+
+for (const prefix of [undefined, '/shop-api']) {
+  test(`production integration forwards the API prefix (${prefix ?? 'unset'}) to the export container`, () => {
+    const folder = fs.mkdtempSync(join(tmpdir(), 'pizza-production-prefix-'))
+    try {
+      const scripts = join(folder, 'docker', 'ci')
+      fs.mkdirSync(scripts, { recursive: true })
+      const integration = 'production-integration.sh'
+      for (const file of [integration, 'check-minio-images.sh']) {
+        fs.copyFileSync(join(root, 'docker', 'ci', file), join(scripts, file))
+      }
+      fs.writeFileSync(join(scripts, 'archive-production-source.sh'),
+        'printf fixture > reports/production-check.source.tar\n')
+      fs.writeFileSync(join(scripts, 'cleanup-production-check.sh'), ':\n')
+      const captured = join(folder, 'create.json')
+      const docker = join(folder, 'docker-fixture')
+      fs.mkdirSync(docker)
+      fs.writeFileSync(join(docker, 'docker'), `#!${process.execPath}
+const fs = require('node:fs');
+const [command, ...args] = process.argv.slice(2);
+if (command === 'run') process.stdout.write('pizza-stage122-0123456789ab');
+if (command === 'create') {
+  const environment = {};
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] !== '-e') continue;
+    const [key, ...value] = args[++i].split('=');
+    const forwarded = value.length ? value.join('=') : process.env[key];
+    if (forwarded !== undefined) environment[key] = forwarded;
+  }
+  fs.writeFileSync(process.env.CAPTURED, JSON.stringify({ environment, args }));
+  process.stdout.write('c'.repeat(64));
+}
+if (command === 'cp') fs.writeFileSync(args.at(-1), 'export fixture');
+if (!['pull', 'build', 'run', 'create', 'start', 'cp'].includes(command)) process.exit(97);
+`, { mode: 0o700 })
+      const result = spawnSync('sh', [join(scripts, integration)], {
+        encoding: 'utf8',
+        env: { ...source, PATH: `${docker}:${source.PATH}`, CI_PROJECT_DIR: folder,
+          CI_PIPELINE_ID: '456', CI_COMMIT_SHA: 'a'.repeat(40), CAPTURED: captured,
+          CI_REGISTRY_PASSWORD: 'registry-secret-canary',
+          ...(prefix === undefined ? {} : { VITE_API_BASE_URL: prefix }) },
+      })
+      assert.equal(result.status, 0, result.stderr)
+      const { environment, args } = JSON.parse(fs.readFileSync(captured, 'utf8'))
+      assert.equal(environment.VITE_API_BASE_URL, prefix)
+      assert.equal(environment.PRODUCTION_EXPORT_IMAGES, '1')
+      assert.equal(environment.CI_PIPELINE_ID, '456')
+      assert.equal(environment.MINIO_IMAGE, source.MINIO_CI_IMAGE)
+      assert.equal(environment.CI_REGISTRY_PASSWORD, undefined)
+      assert.ok(args.some(arg => arg.includes('node /workspace/frontend/tests-production/run.js')))
+      assert.ok(fs.existsSync(join(folder, 'reports', 'production-images.tar.gz')))
+    } finally { fs.rmSync(folder, { recursive: true }) }
+  })
+}

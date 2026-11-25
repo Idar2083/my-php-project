@@ -954,7 +954,15 @@ Laravel. Абсолютный URL другого origin поддерживает
 
 `API_PROXY_TARGET` используется сервером разработки Vite. После его изменения
 перезапустите Vite. Чтобы новое значение `VITE_API_BASE_URL` вошло в `dist/`,
-пересоберите SPA через `npm run build`.
+пересоберите SPA через `npm run build`. В production Compose значение передаётся
+в Docker build как `nginx.build.args.VITE_API_BASE_URL` (по умолчанию `/api`).
+При прямой сборке передайте `--build-arg VITE_API_BASE_URL=/api`. Для нестандартного
+пути настройте внешний прокси того же origin на переписывание префикса в `/api`
+с сохранением метода, query и cookie. Значение публичное и фиксируется в образе.
+Release overlay использует проверенный образ по digest.
+
+Гостевые изменения хранятся в IndexedDB. Если браузер блокирует хранилище,
+корзина работает в памяти текущей вкладки и сообщает об этом.
 
 После загрузки SPA восстанавливает профиль через `GET /api/me`.
 `GET /api/csrf-cookie` выдаёт CSRF-cookie для запросов, меняющих состояние.
@@ -977,6 +985,20 @@ npm run build
 
 В Docker: `docker compose exec -T frontend npm test` и
 `docker compose exec -T frontend npm run build`.
+
+Для браузерной проверки соберите frontend и запустите
+`PLAYWRIGHT_MODULE=/absolute/path/to/playwright/index.mjs node frontend/tests-browser/shop.mjs`
+из корня репозитория. Playwright и Chromium можно установить в отдельный
+временный каталог, исходники и зависимости приложения при этом не меняются.
+Проверка использует собранный SPA с подставными HTTP-ответами, реальные вкладки
+и IndexedDB браузера.
+
+Изолированная production-проверка поднимает временный Docker-стек и удаляет
+его по завершении. Из корня репозитория:
+```sh
+npm run test:production:isolated --prefix frontend
+VITE_API_BASE_URL=/shop-api npm run test:production:isolated --prefix frontend
+```
 
 
 ## GitLab CI — этап 12.3, часть 1

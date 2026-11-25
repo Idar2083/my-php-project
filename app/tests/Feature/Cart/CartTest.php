@@ -112,6 +112,18 @@ final class CartTest extends TestCase
         $this->assertDatabaseCount('cart_items', 0);
     }
 
+    public function test_guest_cart_import_rejects_a_changed_authenticated_account_before_mutation(): void
+    {
+        $product = $this->createProduct();
+        $otherUser = User::factory()->create();
+
+        $this->auth()->postJson('/api/cart/import', [
+            'items' => [['product_id' => $product->id, 'quantity' => 1]],
+        ], ['X-Pizza-Import-Account' => (string) $otherUser->id])->assertConflict();
+
+        $this->assertDatabaseCount('cart_items', 0);
+    }
+
     public function test_guest_cart_import_cannot_target_another_cart(): void
     {
         $product = $this->createProduct();

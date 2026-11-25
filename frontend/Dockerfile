@@ -8,8 +8,8 @@ FROM dependencies AS build
 COPY index.html vite.config.js ./
 COPY src ./src
 # Production uses a same-origin API; no local env files or secrets enter the build.
-ENV VITE_API_BASE_URL=/api
-RUN npm run build
+ARG VITE_API_BASE_URL=/api
+RUN VITE_API_BASE_URL="$VITE_API_BASE_URL" npm run build
 
 FROM dependencies AS dev
 COPY . .

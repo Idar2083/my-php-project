@@ -22,7 +22,14 @@ test('SPA, built assets and cache policy', async () => {
     assert.ok(contents.length > 0)
     assert.doesNotMatch(contents, /<!doctype html>/i)
     if (path.endsWith('.js')) {
-      assert.ok(/['"\x60]\/api['"\x60]/.test(contents), 'Built client must use the same-origin API')
+      const expected = (process.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
+      assert.ok(['"', "'", String.fromCharCode(96)].some(quote => contents.includes(quote + expected + quote)),
+        'Built client must use the configured API path')
+      assert.doesNotMatch(contents, /APP_KEY|JWT_SECRET|DB_PASSWORD/)
+      for (const name of ['APP_KEY', 'JWT_SECRET', 'DB_PASSWORD', 'REDIS_PASSWORD', 'MINIO_ROOT_PASSWORD']) {
+        const secret = process.env[name]
+        if (secret?.length >= 12) assert.ok(!contents.includes(secret), 'Built client contains a server-only value')
+      }
     }
     const etag = asset.headers.get('etag')
     assert.ok(etag)
@@ -118,4 +125,49 @@ test('Authorization reaches Laravel and user responses remain private', {
   for (const field of ['password', 'remember_token', 'token', 'token_type']) {
     assert.equal(Object.hasOwn(user, field), false, field)
   }
+})
+
+
+test('Swagger UI, OpenAPI JSON and Swagger assets are served by Laravel', async () => {
+  const ui = await get('/api/doc')
+  assert.equal(ui.status, 200)
+  const html = await ui.text()
+  assert.match(html, /swagger-ui/i)
+  assert.doesNotMatch(html, /<div id="app"><\/div>/)
+  const docs = await json(await get('/docs?api-docs.json'), 200)
+  assert.match(docs.openapi, /^3\./)
+  assert.ok(docs.paths['/api/products'])
+  for (const file of ['swagger-ui.css', 'swagger-ui-bundle.js']) {
+    const asset = await get(`/docs/asset/${file}`)
+    assert.equal(asset.status, 200, file)
+    assert.match(asset.headers.get('content-type'), file.endsWith('.css') ? /css/ : /javascript/)
+    assert.doesNotMatch(await asset.text(), /^<!doctype html>/i)
+  }
+})
+
+test('SPA cookies and CSRF reach Laravel through Nginx', {
+  skip: process.env.PRODUCTION_FIXTURES !== '1',
+}, async () => {
+  const base = process.env.PRODUCTION_API_TEST_PATH || '/api'
+  const headers = {
+    Accept: 'application/json',
+    Origin: process.env.APP_URL || origin.origin,
+    'X-Pizza-Client': 'spa',
+  }
+  const products = await json(await get(`${base}/products?page=2`, { headers }), 200)
+  assert.equal(products.meta.current_page, 2)
+  const csrf = await get(`${base}/csrf-cookie`, { headers })
+  assert.equal(csrf.status, 204)
+  const cookies = csrf.headers.getSetCookie().map(cookie => cookie.split(';', 1)[0])
+  const token = cookies.find(cookie => cookie.startsWith('XSRF-TOKEN='))?.slice('XSRF-TOKEN='.length)
+  assert.ok(token)
+  assert.ok(cookies.some(cookie => !cookie.startsWith('XSRF-TOKEN=')))
+  const withSession = { ...headers, Cookie: cookies.join('; ') }
+  assert.equal((await get(`${base}/me`, { headers: withSession })).status, 401)
+  const post = { method: 'POST', body: JSON.stringify({}), headers: { ...withSession, 'Content-Type': 'application/json' } }
+  assert.equal((await get(`${base}/login`, post)).status, 419)
+  const validated = await get(`${base}/login`, {
+    ...post, headers: { ...post.headers, 'X-XSRF-TOKEN': decodeURIComponent(token) },
+  })
+  assert.equal(validated.status, 422)
 })

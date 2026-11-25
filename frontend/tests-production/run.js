@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -134,7 +134,25 @@ try {
     (...args) => run('docker', [...composeArgs, ...args], { capture: true, timeout: 10000 }),
     (...args) => run('docker', args, { capture: true, timeout: 10000 }),
   )
+  compose('exec', '-T', 'nginx', 'nginx', '-t')
   const nginxContainer = capture('ps', '--quiet', 'nginx')
+  const apiPath = (environment.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
+  if (apiPath !== '/api') {
+    assert.match(apiPath, /^\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+$/, 'Use a same-origin API prefix for production')
+    // Model the external proxy in an isolated container. The published image stays unchanged.
+    const config = join(directory, 'nginx-prefix.conf')
+    const original = readFileSync(join(frontend, 'nginx.conf'), 'utf8')
+    writeFileSync(config, original.replace('    location = /api {', `    location ^~ ${apiPath}/ {
+        proxy_set_header Host $http_host;
+        proxy_pass http://127.0.0.1/api/;
+    }
+
+    location = /api {`))
+    run('docker', ['cp', config, `${nginxContainer}:/etc/nginx/conf.d/default.conf`])
+    compose('exec', '-T', 'nginx', 'nginx', '-t')
+    compose('exec', '-T', 'nginx', 'nginx', '-s', 'reload')
+  }
+
   for (const name of Object.keys(fixtures)) {
     run('docker', ['cp', join(directory, name), `${nginxContainer}:/usr/share/nginx/html/assets/${name}`])
   }
@@ -169,6 +187,7 @@ try {
   const testEnvironment = {
     ...environment, PRODUCTION_URL: `http://${address}`, PRODUCTION_FIXTURES: '1',
     PRODUCTION_TEST_TOKEN: fixture.token, PRODUCTION_TEST_USER_EMAIL: fixture.email,
+    PRODUCTION_API_TEST_PATH: apiPath,
   }
   const check = file => run(process.execPath, ['--test', join(frontend, 'tests-production', file)], { env: testEnvironment })
   check('http.test.js')

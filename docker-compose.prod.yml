@@ -169,6 +169,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: prod
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
     restart: unless-stopped
     ports:
       - "${NGINX_PORT:?Set NGINX_PORT for production}:80"

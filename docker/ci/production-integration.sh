@@ -20,7 +20,7 @@ container=$(docker create -i --network bridge \
     -e DOCKER_HOST=unix:///var/run/docker.sock \
     -e PRODUCTION_CHECK_NETWORK=container \
     -e "PRODUCTION_CHECK_PROJECT=$project" \
-    -e PRODUCTION_EXPORT_IMAGES=1 \
+    -e PRODUCTION_EXPORT_IMAGES=1 -e VITE_API_BASE_URL \
     -e "MINIO_IMAGE=$MINIO_CI_IMAGE" -e "MINIO_MC_IMAGE=$MINIO_MC_CI_IMAGE" \
     -e CI_REGISTRY_IMAGE -e CI_PIPELINE_ID -e CI_JOB_ID -e CI_COMMIT_SHA \
     "$tools_image" sh -ec 'mkdir -p /workspace; tar -xf - -C /workspace; node /workspace/frontend/tests-production/run.js')

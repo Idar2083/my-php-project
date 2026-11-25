@@ -21,7 +21,7 @@ describe('catalog page', () => {
     await flushPromises()
     expect(wrapper.find('[role="status"]').exists()).toBe(false)
     const card = wrapper.get('article').text()
-    for (const field of ['Pepperoni', '799', 'pizza', 'Томатный соус', '0.550']) {
+    for (const field of ['Pepperoni', '799', 'Пицца', 'Томатный соус', '0.550']) {
       expect(card).toContain(field)
     }
   })

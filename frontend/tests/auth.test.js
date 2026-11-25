@@ -6,13 +6,14 @@ let wrapper
 afterEach(() => wrapper?.unmount())
 function render(register, api) { wrapper = mount(AuthForm, { props: { register }, global: { provide: { api } } }) }
 
-it('validates registration password complexity before a request', async () => {
-  const request = vi.fn()
+it('uses server password validation and associates the error with the field', async () => {
+  const request = vi.fn().mockRejectedValue(new ApiError(422, ['Слабый пароль.'], { password: ['Слабый пароль.'] }))
   render(true, { request })
-  await wrapper.get('[name=password]').setValue('short')
-  await wrapper.get('form').trigger('submit')
-  expect(request).not.toHaveBeenCalled()
-  expect(wrapper.get('[role=alert]').text()).toContain('минимум 8 символов')
+  await wrapper.get('[name=password]').setValue('Кириллица9!')
+  await wrapper.get('form').trigger('submit'); await flushPromises()
+  expect(request.mock.lastCall[1].body.password).toBe('Кириллица9!')
+  expect(wrapper.get('[name=password]').attributes('aria-describedby')).toBe('auth-password')
+  expect(wrapper.get('#auth-password').text()).toContain('Слабый пароль')
 })
 
 it('registers using exactly name/email/password and uses the session profile', async () => {

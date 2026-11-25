@@ -1,60 +1,68 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
-import { resource } from '../api/client.js'
+import { computed } from 'vue'
 import RequestError from './RequestError.vue'
-const props = defineProps({ localItems: Array, transferring: Boolean })
-const emit = defineEmits(['checkout', 'quantity', 'remove'])
-const api = inject('api')
-const cart = ref(null)
-const error = ref(null)
-const busy = ref(false)
-const items = computed(() => props.localItems ?? cart.value?.items)
-const total = computed(() => (items.value || []).reduce((sum, item) => sum + Math.round(item.product.price * 100) * item.quantity, 0) / 100)
-async function load() {
-  if (busy.value) return
-  busy.value = true; error.value = null
-  try { cart.value = resource(await api.request('/cart')) }
-  catch (failure) { error.value = failure }
-  finally { busy.value = false }
-}
-async function mutate(item, method, quantity) {
-  if (busy.value || props.transferring) return
-  if (props.localItems) {
-    if (method === 'PUT') emit('quantity', item, quantity)
-    else emit('remove', item)
-    return
-  }
-  busy.value = true; error.value = null
-  try {
-    cart.value = resource(await api.request(`/cart/items/${item.id}`, {
-      method, ...(method === 'PUT' ? { body: { quantity } } : {}),
-    }))
-  } catch (failure) { error.value = failure }
-  finally { busy.value = false }
-}
-onMounted(() => { if (!props.localItems) void load() })
+import QuantityStepper from './QuantityStepper.vue'
+import { formatAmount, totalAmount } from '../presentation.js'
+
+const props = defineProps({
+  items: Array, guestItems: Array, busy: Boolean, loading: Boolean, pending: Object, paused: Set,
+  error: Error, errors: Object, importError: Error, guestErrors: Object,
+})
+defineEmits(['checkout', 'catalog', 'adjust', 'remove', 'retry', 'retry-row', 'import', 'guest-adjust', 'guest-remove'])
+const total = computed(() => totalAmount(props.items))
 </script>
+
 <template>
-  <section :aria-busy="busy">
-    <h1>Корзина</h1>
+  <section>
+    <h1 tabindex="-1">Корзина</h1>
     <RequestError :error="error" />
-    <button v-if="error" :disabled="busy || transferring" @click="load">Обновить корзину</button>
-    <p v-if="busy" role="status">Обновляем корзину…</p>
-    <p v-if="items && !items.length" class="state">Корзина пуста. Выберите пиццу или напиток в каталоге.</p>
-    <template v-if="items?.length">
+    <button v-if="error" class="secondary" :disabled="busy || loading" @click="$emit('retry')">Обновить корзину</button>
+    <p v-if="loading" role="status">Обновляем корзину…</p>
+    <div v-if="items && !items.length" class="panel">
+      <p>Корзина пуста. Выберите пиццу или напиток в каталоге.</p>
+      <button class="secondary" @click="$emit('catalog')">Перейти в каталог</button>
+    </div>
+    <div v-else-if="items?.length" class="cart-layout">
       <ul class="item-list">
         <li v-for="item in items" :key="item.id" class="panel cart-item">
-          <div><h2>{{ item.product.name }}</h2><p>{{ item.product.price }} × {{ item.quantity }} = {{ (item.product.price * item.quantity).toFixed(2) }}</p></div>
-          <form @submit.prevent="mutate(item, 'PUT', Number($event.target.elements.quantity.value))">
-            <label>Количество<input name="quantity" type="number" :value="item.quantity" min="1" max="30" step="1" required :disabled="busy || transferring"></label>
-            <button :disabled="busy || transferring">Сохранить</button>
-          </form>
-          <button class="secondary" :disabled="busy || transferring" @click="mutate(item, 'DELETE')">Удалить</button>
+          <div><h2>{{ item.product.name }}</h2><p>За штуку: {{ formatAmount(item.product.price) }}</p></div>
+          <div class="cart-controls">
+            <QuantityStepper :quantity="paused?.has(String(item.id)) ? item.quantity : (pending?.[item.id]?.quantity ?? item.quantity)" :name="item.product.name"
+              :disabled="busy || paused?.has(String(item.id)) || pending?.[item.id]?.remove" @adjust="$emit('adjust', item, $event)" />
+            <strong>{{ formatAmount(totalAmount([item])) }}</strong>
+            <button class="text-button" :disabled="busy || pending?.[item.id]?.remove"
+              :aria-label="`Удалить: ${item.product.name}`" @click="$emit('remove', item)">Удалить</button>
+          </div>
+          <p v-if="pending?.[item.id] && !paused?.has(String(item.id))" class="muted" role="status">Сохраняем изменение…</p>
+          <RequestError :error="errors?.[item.id]" />
+          <button v-if="paused?.has(String(item.id))" class="secondary" :disabled="busy"
+            @click="$emit('retry-row', item.id)">Сверить и повторить изменение</button>
         </li>
       </ul>
-      <p class="total">Итого по текущим ценам: {{ total.toFixed(2) }}</p>
-      <p class="muted">Окончательную стоимость рассчитает сервер при оформлении.</p>
-      <button :disabled="busy || transferring || !!error" @click="$emit('checkout')">Оформить заказ</button>
-    </template>
+      <aside class="panel cart-total">
+        <h2>Итого</h2>
+        <p class="total">{{ formatAmount(total) }}</p>
+        <p class="muted">Окончательную стоимость рассчитает сервер при оформлении.</p>
+        <p v-if="guestItems?.length" class="muted">Гостевые товары останутся в браузере, если оформить только товары аккаунта.</p>
+        <button :disabled="busy || loading || !!error" @click="$emit('checkout')">Оформить заказ</button>
+      </aside>
+    </div>
+    <section v-if="guestItems?.length" class="panel guest-transfer">
+      <h2>Товары из гостевой корзины</h2>
+      <p>Гостевые позиции ожидают переноса. При превышении лимита уменьшите количество в корзине аккаунта или измените гостевые позиции.</p>
+      <RequestError :error="importError" />
+      <ul class="item-list">
+        <li v-for="item in guestItems" :key="item.id" class="cart-item">
+          <strong>{{ item.product.name }}</strong>
+          <div class="cart-controls">
+            <QuantityStepper :quantity="item.quantity" :name="item.product.name" :disabled="busy"
+              @adjust="$emit('guest-adjust', item, $event)" />
+            <button class="text-button" :disabled="busy" @click="$emit('guest-remove', item)">Удалить</button>
+          </div>
+          <RequestError :error="guestErrors?.[item.id]" />
+        </li>
+      </ul>
+      <button :disabled="busy || loading" @click="$emit('import')">{{ busy ? 'Переносим…' : 'Повторить перенос' }}</button>
+    </section>
   </section>
 </template>

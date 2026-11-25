@@ -173,8 +173,6 @@ frontend:
   needs: []
   stage: code-quality
   image: node:24-alpine
-  variables:
-    VITE_API_BASE_URL: /api
   script:
     - cd "$CI_PROJECT_DIR"
     - node --test docker/release/published-manifest.test.mjs docker/minio/ci.test.mjs frontend/tests-production/start-services.test.js
@@ -260,7 +258,7 @@ production-config:
     - docker compose --env-file .env -f docker-compose.yml config --quiet
     - docker compose --env-file .env --profile frontend -f docker-compose.yml config --quiet
     - docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml config --quiet
-    - docker build --target prod -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID" frontend
+    - docker build --target prod --build-arg "VITE_API_BASE_URL=${VITE_API_BASE_URL:-/api}" -f frontend/Dockerfile -t "$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID" frontend
     - docker run --rm --network none --entrypoint nginx "$CI_REGISTRY_IMAGE/frontend-config-check:$CI_PIPELINE_ID" -t
 
 production-integration:
