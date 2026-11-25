@@ -17,7 +17,7 @@ use OpenApi\Attributes as OA;
         new OA\Property(property: 'postal_code', type: 'string', maxLength: 255, minLength: 1),
         new OA\Property(property: 'entrance', type: 'string', nullable: true, maxLength: 255),
         new OA\Property(property: 'apartment', type: 'string', nullable: true, maxLength: 255),
-        new OA\Property(property: 'delivery_method', type: 'string', enum: ['delivery', 'pickup', 'courier'], minLength: 1),
+        new OA\Property(property: 'delivery_method', type: 'string', minLength: 1, enum: ['delivery', 'pickup', 'courier']),
     ],
     type: 'object',
 )]
